@@ -1,0 +1,1691 @@
+// ==UserScript==
+// @name         开发者工具侧边栏版
+// @namespace    devtools-sidebar-native
+// @version      3.2
+// @description  完整独立实现的网页调试工具 - 含控制台/元素/网络/资源/主题
+// @author       Developer
+// @run-at       document-end
+// @match        *://*/*
+// @exclude      *://*.chrome.google.com/*
+// @exclude      *://*.microsoft.com/*
+// @grant        none
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    // ============ 全局变量 ============
+    let isOpen = false;
+    let activeTab = 'console';
+    let activeResourceTab = 'local';
+    let isDarkTheme = false;
+    let activeLogFilters = { log: true, warn: true, error: true, info: true };
+    let searchQuery = '';
+    let logs = [];
+    let networkRequests = [];
+    let selectedElement = null;
+    let isSelectingElement = false;
+    let elementIdCounter = 0;
+    const elementMap = new Map();
+    let expandedObjects = new Set();
+    let elementTreeRendered = false;
+    let expandedNodes = new Set();
+
+    // ============ 工具函数 ============
+    function escapeHtml(str) {
+        if (!str) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    // ============ 样式创建 ============
+    function createStyles() {
+        const style = document.createElement('style');
+        style.id = 'devtools-native-styles';
+        style.textContent = `
+            /* 开关按钮 */
+            .devtools-toggle-btn {
+                position: fixed !important;
+                top: 50% !important;
+                right: 0 !important;
+                transform: translateY(-50%) !important;
+                z-index: 2147483646 !important;
+                background: var(--bg-toggle, #333) !important;
+                color: var(--text-toggle, white) !important;
+                border: none !important;
+                padding: 16px 8px !important;
+                border-radius: 4px 0 0 4px !important;
+                cursor: pointer !important;
+                font-size: 20px !important;
+                box-shadow: -2px 0 8px rgba(0,0,0,0.15) !important;
+                transition: background 0.2s, right 0.3s ease !important;
+                font-family: 'Microsoft YaHei', 'PingFang SC', sans-serif !important;
+                line-height: 1 !important;
+            }
+            .devtools-toggle-btn:hover {
+                background: var(--bg-toggle-hover, #000) !important;
+            }
+            .devtools-toggle-btn.open {
+                right: 500px !important;
+            }
+
+            /* 侧边栏 */
+            .devtools-sidebar {
+                position: fixed !important;
+                top: 0 !important;
+                right: -500px !important;
+                width: 500px !important;
+                height: 100vh !important;
+                background: var(--bg-sidebar, #fff) !important;
+                z-index: 2147483645 !important;
+                transition: right 0.3s ease !important;
+                display: flex !important;
+                flex-direction: column !important;
+                box-shadow: -2px 0 10px rgba(0,0,0,0.2) !important;
+                font-family: 'Microsoft YaHei', 'PingFang SC', sans-serif !important;
+                border-left: 1px solid var(--border, #ccc) !important;
+            }
+            .devtools-sidebar.open {
+                right: 0 !important;
+            }
+
+            /* 头部 */
+            .devtools-header {
+                background: var(--bg-header, #f5f5f5) !important;
+                padding: 12px 16px !important;
+                border-bottom: 1px solid var(--border, #ccc) !important;
+                display: flex !important;
+                justify-content: space-between !important;
+                align-items: center !important;
+                flex-shrink: 0 !important;
+            }
+            .devtools-header h3 {
+                color: var(--text-primary, #333) !important;
+                font-size: 14px !important;
+                font-weight: 600 !important;
+                margin: 0 !important;
+            }
+            .devtools-header-right {
+                display: flex !important;
+                gap: 8px !important;
+            }
+            .devtools-theme-btn,
+            .devtools-close-btn {
+                background: none !important;
+                border: none !important;
+                color: var(--text-secondary, #666) !important;
+                font-size: 18px !important;
+                cursor: pointer !important;
+                padding: 4px !important;
+            }
+            .devtools-theme-btn:hover,
+            .devtools-close-btn:hover {
+                color: var(--text-primary, #000) !important;
+            }
+
+            /* 标签栏 */
+            .devtools-tabs {
+                display: flex !important;
+                background: var(--bg-tabs, #fafafa) !important;
+                border-bottom: 1px solid var(--border, #ccc) !important;
+                flex-shrink: 0 !important;
+                overflow-x: auto !important;
+            }
+            .devtools-tab {
+                padding: 10px 16px !important;
+                color: var(--text-secondary, #666) !important;
+                cursor: pointer !important;
+                font-size: 13px !important;
+                border-bottom: 2px solid transparent !important;
+                transition: all 0.2s !important;
+                white-space: nowrap !important;
+            }
+            .devtools-tab:hover {
+                color: var(--text-primary, #333) !important;
+            }
+            .devtools-tab.active {
+                color: var(--text-primary, #000) !important;
+                border-bottom-color: var(--border-active, #000) !important;
+                background: var(--bg-panel, #fff) !important;
+            }
+
+            /* 内容区域 */
+            .devtools-content {
+                flex: 1 !important;
+                overflow: auto !important;
+                color: var(--text-primary, #333) !important;
+                font-size: 13px !important;
+            }
+            .devtools-panel {
+                display: none !important;
+                height: 100% !important;
+                overflow: auto !important;
+            }
+            .devtools-panel.active {
+                display: block !important;
+            }
+
+            /* 控制台样式 */
+            .devtools-console {
+                padding: 8px !important;
+            }
+            .devtools-console-header {
+                display: flex !important;
+                gap: 8px !important;
+                padding: 8px !important;
+                border-bottom: 1px solid var(--border-light, #eee) !important;
+                margin-bottom: 8px !important;
+                flex-wrap: wrap !important;
+            }
+            .devtools-console-btn {
+                padding: 4px 12px !important;
+                background: var(--bg-btn, #f0f0f0) !important;
+                color: var(--text-primary, #333) !important;
+                border: 1px solid var(--border, #ccc) !important;
+                border-radius: 3px !important;
+                cursor: pointer !important;
+                font-size: 12px !important;
+            }
+            .devtools-console-btn:hover {
+                background: var(--bg-btn-hover, #e0e0e0) !important;
+            }
+            .devtools-console-btn.active {
+                background: var(--bg-btn-active, #000) !important;
+                color: white !important;
+            }
+            .devtools-search-box {
+                flex: 1 !important;
+                min-width: 150px !important;
+                padding: 4px 8px !important;
+                border: 1px solid var(--border, #ccc) !important;
+                border-radius: 3px !important;
+                font-size: 12px !important;
+                background: var(--bg-panel, #fff) !important;
+                color: var(--text-primary, #333) !important;
+            }
+            .devtools-log-item {
+                padding: 6px 8px !important;
+                border-bottom: 1px solid var(--border-light, #eee) !important;
+                word-break: break-all !important;
+                background: var(--bg-panel, #fff) !important;
+            }
+            .devtools-log-item.log { color: var(--text-primary, #333) !important; }
+            .devtools-log-item.warn { color: var(--text-warn, #996600) !important; background: var(--bg-warn, #fffbe6) !important; }
+            .devtools-log-item.error { color: var(--text-error, #c00) !important; background: var(--bg-error, #fff5f5) !important; }
+            .devtools-log-item.info { color: var(--text-info, #0066cc) !important; background: var(--bg-info, #f0f7ff) !important; }
+            .devtools-log-toggle {
+                display: inline-block;
+                margin-right: 6px;
+                cursor: pointer;
+                user-select: none;
+            }
+
+            /* 元素面板 */
+            .devtools-elements {
+                padding: 8px !important;
+            }
+            .devtools-elements-header {
+                padding: 8px !important;
+                border-bottom: 1px solid var(--border-light, #eee) !important;
+                margin-bottom: 8px !important;
+                display: flex !important;
+                gap: 8px !important;
+            }
+            .devtools-element-selector {
+                padding: 4px 12px !important;
+                background: var(--bg-btn, #f0f0f0) !important;
+                color: var(--text-primary, #333) !important;
+                border: 1px solid var(--border, #ccc) !important;
+                border-radius: 3px !important;
+                cursor: pointer !important;
+                font-size: 12px !important;
+            }
+            .devtools-element-selector.active {
+                background: var(--bg-btn-active, #000) !important;
+                color: white !important;
+            }
+            .devtools-element-tree {
+                font-family: 'Consolas', 'Monaco', monospace !important;
+                font-size: 12px !important;
+                color: var(--text-primary, #333) !important;
+            }
+            .devtools-tree-node {
+                padding: 2px 4px !important;
+                cursor: pointer !important;
+                user-select: none !important;
+            }
+            .devtools-tree-node:hover {
+                background: var(--bg-hover, #f5f5f5) !important;
+            }
+            .devtools-tree-node.selected {
+                background: var(--bg-selected, #000) !important;
+                color: white !important;
+            }
+            .devtools-tree-toggle {
+                display: inline-block !important;
+                width: 16px !important;
+                text-align: center !important;
+                color: var(--text-secondary, #666) !important;
+            }
+            .devtools-tree-children {
+                margin-left: 16px !important;
+                display: none !important;
+            }
+            .devtools-tree-children.open {
+                display: block !important;
+            }
+            .devtools-tag-name { color: var(--text-tag, #555) !important; }
+            .devtools-attr-name { color: var(--text-attr, #666) !important; }
+            .devtools-attr-value { color: var(--text-primary, #333) !important; }
+            .devtools-highlight-overlay {
+                position: fixed !important;
+                z-index: 2147483644 !important;
+                pointer-events: none !important;
+                background: rgba(0,0,0,0.1) !important;
+                border: 2px solid var(--text-primary, #000) !important;
+                box-sizing: border-box !important;
+            }
+
+            /* 网络面板 */
+            .devtools-network {
+                padding: 8px !important;
+            }
+            .devtools-network-header {
+                padding: 8px !important;
+                border-bottom: 1px solid var(--border-light, #eee) !important;
+                margin-bottom: 8px !important;
+                display: flex !important;
+                gap: 8px !important;
+            }
+            .devtools-network-item {
+                padding: 6px 8px !important;
+                border-bottom: 1px solid var(--border-light, #eee) !important;
+                display: flex !important;
+                gap: 8px !important;
+                font-size: 12px !important;
+                background: var(--bg-panel, #fff) !important;
+                cursor: pointer !important;
+            }
+            .devtools-network-item:hover {
+                background: var(--bg-hover, #f5f5f5) !important;
+            }
+            .devtools-network-method {
+                min-width: 60px !important;
+                font-weight: bold !important;
+                color: var(--text-primary, #333) !important;
+            }
+            .devtools-network-url {
+                flex: 1 !important;
+                overflow: hidden !important;
+                text-overflow: ellipsis !important;
+                white-space: nowrap !important;
+                color: var(--text-secondary, #666) !important;
+            }
+            .devtools-network-status {
+                min-width: 50px !important;
+                text-align: right !important;
+                color: var(--text-primary, #333) !important;
+            }
+            .devtools-network-status.success { color: var(--text-success, #333) !important; }
+            .devtools-network-status.error { color: var(--text-error, #c00) !important; }
+            .devtools-network-time {
+                min-width: 60px !important;
+                text-align: right !important;
+                color: var(--text-secondary, #999) !important;
+            }
+            .devtools-network-details {
+                padding: 12px !important;
+                background: var(--bg-details, #fafafa) !important;
+                border-bottom: 1px solid var(--border-light, #eee) !important;
+            }
+            .devtools-details-header {
+                display: flex !important;
+                justify-content: space-between !important;
+                align-items: center !important;
+                margin-bottom: 12px !important;
+            }
+            .devtools-details-title {
+                font-weight: 600 !important;
+                font-size: 13px !important;
+            }
+            .devtools-details-close {
+                cursor: pointer !important;
+                color: var(--text-secondary, #666) !important;
+            }
+            .devtools-details-item {
+                margin-bottom: 8px !important;
+                font-size: 12px !important;
+            }
+            .devtools-details-label {
+                font-weight: 600 !important;
+                margin-bottom: 4px !important;
+            }
+            .devtools-details-value {
+                word-break: break-all !important;
+            }
+
+            /* 资源面板 */
+            .devtools-resources {
+                padding: 0 !important;
+                height: 100% !important;
+                display: flex !important;
+                flex-direction: column !important;
+            }
+            .devtools-resource-tabs {
+                display: flex !important;
+                border-bottom: 1px solid var(--border-light, #eee) !important;
+                background: var(--bg-tabs, #fafafa) !important;
+                flex-shrink: 0 !important;
+                overflow-x: auto !important;
+            }
+            .devtools-resource-tab {
+                padding: 8px 12px !important;
+                color: var(--text-secondary, #666) !important;
+                cursor: pointer !important;
+                font-size: 12px !important;
+                border-bottom: 2px solid transparent !important;
+                white-space: nowrap !important;
+            }
+            .devtools-resource-tab:hover {
+                color: var(--text-primary, #333) !important;
+            }
+            .devtools-resource-tab.active {
+                color: var(--text-primary, #000) !important;
+                border-bottom-color: var(--border-active, #000) !important;
+                background: var(--bg-panel, #fff) !important;
+            }
+            .devtools-resource-content {
+                flex: 1 !important;
+                overflow: auto !important;
+                padding: 8px !important;
+            }
+            .devtools-resource-header {
+                display: flex !important;
+                justify-content: space-between !important;
+                align-items: center !important;
+                margin-bottom: 8px !important;
+            }
+            .devtools-resource-title {
+                font-size: 14px !important;
+                font-weight: 600 !important;
+                color: var(--text-primary, #333) !important;
+            }
+            .devtools-storage-table {
+                width: 100% !important;
+                border-collapse: collapse !important;
+                font-size: 12px !important;
+            }
+            .devtools-storage-table th,
+            .devtools-storage-table td {
+                border: 1px solid var(--border-light, #eee) !important;
+                padding: 6px 8px !important;
+                text-align: left !important;
+                word-break: break-all !important;
+            }
+            .devtools-storage-table th {
+                background: var(--bg-header, #f5f5f5) !important;
+                color: var(--text-primary, #333) !important;
+                font-weight: 600 !important;
+                position: sticky !important;
+                top: 0 !important;
+            }
+            .devtools-storage-table td {
+                background: var(--bg-panel, #fff) !important;
+            }
+            .devtools-storage-table tr:hover td {
+                background: var(--bg-hover, #f9f9f9) !important;
+            }
+            .devtools-action-btn {
+                padding: 2px 6px !important;
+                margin: 0 2px !important;
+                background: var(--bg-btn, #f0f0f0) !important;
+                border: 1px solid var(--border, #ccc) !important;
+                border-radius: 2px !important;
+                cursor: pointer !important;
+                font-size: 11px !important;
+            }
+            .devtools-action-btn:hover {
+                background: var(--bg-btn-hover, #e0e0e0) !important;
+            }
+            .devtools-resource-list {
+                font-size: 12px !important;
+            }
+            .devtools-resource-link {
+                display: block !important;
+                padding: 6px 8px !important;
+                color: var(--text-link, #0066cc) !important;
+                text-decoration: none !important;
+                border-bottom: 1px solid var(--border-light, #eee) !important;
+                word-break: break-all !important;
+            }
+            .devtools-resource-link:hover {
+                background: var(--bg-hover, #f5f5f5) !important;
+            }
+            .devtools-image-grid {
+                display: grid !important;
+                grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)) !important;
+                gap: 8px !important;
+            }
+            .devtools-image-item {
+                border: 1px solid var(--border-light, #eee) !important;
+                padding: 4px !important;
+                background: var(--bg-panel, #fff) !important;
+            }
+            .devtools-image-item img {
+                width: 100% !important;
+                height: auto !important;
+                display: block !important;
+            }
+            .devtools-add-row {
+                margin-top: 8px !important;
+                padding: 6px 12px !important;
+                background: var(--bg-btn, #f0f0f0) !important;
+                border: 1px solid var(--border, #ccc) !important;
+                border-radius: 3px !important;
+                cursor: pointer !important;
+                font-size: 12px !important;
+            }
+            .devtools-add-row:hover {
+                background: var(--bg-btn-hover, #e0e0e0) !important;
+            }
+
+            /* 深色主题 */
+            .devtools-sidebar.dark-theme {
+                --bg-sidebar: #1e1e1e;
+                --bg-panel: #252526;
+                --bg-header: #2d2d2d;
+                --bg-tabs: #333333;
+                --bg-btn: #3c3c3c;
+                --bg-btn-hover: #4c4c4c;
+                --bg-btn-active: #0e639c;
+                --bg-hover: #2a2d2e;
+                --bg-selected: #094771;
+                --bg-details: #2d2d2d;
+                --bg-warn: #454137;
+                --bg-error: #4b1818;
+                --bg-info: #0f3a60;
+                --text-primary: #cccccc;
+                --text-secondary: #969696;
+                --text-tag: #9cdcfe;
+                --text-attr: #9cdcfe;
+                --text-link: #3794ff;
+                --text-warn: #dcdcaa;
+                --text-error: #f44747;
+                --text-info: #4ec9b0;
+                --text-success: #6a9955;
+                --border: #454545;
+                --border-light: #3c3c3c;
+                --border-active: #0078d4;
+                --bg-toggle: #333;
+                --bg-toggle-hover: #1e1e1e;
+                --text-toggle: white;
+            }
+
+            /* 页面推移 */
+            .devtools-body-pushed {
+                margin-right: 500px !important;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    // ============ UI 创建 ============
+    function createSidebar() {
+        const toggleBtn = document.createElement('button');
+        toggleBtn.className = 'devtools-toggle-btn';
+        toggleBtn.id = 'devtools-toggle-btn';
+        toggleBtn.textContent = '▶';
+        toggleBtn.addEventListener('click', toggleSidebar);
+        document.body.appendChild(toggleBtn);
+
+        const sidebar = document.createElement('div');
+        sidebar.className = 'devtools-sidebar';
+        sidebar.id = 'devtools-sidebar';
+
+        const header = document.createElement('div');
+        header.className = 'devtools-header';
+
+        const title = document.createElement('h3');
+        title.textContent = '开发者工具';
+
+        const headerRight = document.createElement('div');
+        headerRight.className = 'devtools-header-right';
+
+        const themeBtn = document.createElement('button');
+        themeBtn.className = 'devtools-theme-btn';
+        themeBtn.id = 'devtools-theme-btn';
+        themeBtn.textContent = '🌙';
+        themeBtn.title = '切换主题';
+        themeBtn.addEventListener('click', toggleTheme);
+
+        const closeBtn = document.createElement('button');
+        closeBtn.className = 'devtools-close-btn';
+        closeBtn.textContent = '×';
+        closeBtn.addEventListener('click', closeSidebar);
+
+        headerRight.appendChild(themeBtn);
+        headerRight.appendChild(closeBtn);
+        header.appendChild(title);
+        header.appendChild(headerRight);
+
+        const tabsContainer = document.createElement('div');
+        tabsContainer.className = 'devtools-tabs';
+
+        const tabs = [
+            { id: 'console', label: '控制台' },
+            { id: 'elements', label: '元素' },
+            { id: 'network', label: '网络' },
+            { id: 'resources', label: '资源' }
+        ];
+
+        tabs.forEach(tab => {
+            const tabBtn = document.createElement('div');
+            tabBtn.className = 'devtools-tab' + (tab.id === 'console' ? ' active' : '');
+            tabBtn.dataset.tab = tab.id;
+            tabBtn.textContent = tab.label;
+            tabBtn.addEventListener('click', () => switchTab(tab.id));
+            tabsContainer.appendChild(tabBtn);
+        });
+
+        const content = document.createElement('div');
+        content.className = 'devtools-content';
+
+        const consolePanel = document.createElement('div');
+        consolePanel.className = 'devtools-panel active';
+        consolePanel.id = 'devtools-panel-console';
+
+        const consoleHeader = document.createElement('div');
+        consoleHeader.className = 'devtools-console-header';
+
+        const btnAll = document.createElement('button');
+        btnAll.className = 'devtools-console-btn active';
+        btnAll.textContent = '全部';
+        btnAll.dataset.filter = 'all';
+        btnAll.addEventListener('click', () => toggleFilterAll());
+
+        const btnLog = document.createElement('button');
+        btnLog.className = 'devtools-console-btn active';
+        btnLog.textContent = '日志';
+        btnLog.dataset.filter = 'log';
+        btnLog.addEventListener('click', () => toggleFilter('log'));
+
+        const btnWarn = document.createElement('button');
+        btnWarn.className = 'devtools-console-btn active';
+        btnWarn.textContent = '警告';
+        btnWarn.dataset.filter = 'warn';
+        btnWarn.addEventListener('click', () => toggleFilter('warn'));
+
+        const btnError = document.createElement('button');
+        btnError.className = 'devtools-console-btn active';
+        btnError.textContent = '错误';
+        btnError.dataset.filter = 'error';
+        btnError.addEventListener('click', () => toggleFilter('error'));
+
+        const btnInfo = document.createElement('button');
+        btnInfo.className = 'devtools-console-btn active';
+        btnInfo.textContent = '信息';
+        btnInfo.dataset.filter = 'info';
+        btnInfo.addEventListener('click', () => toggleFilter('info'));
+
+        const searchBox = document.createElement('input');
+        searchBox.className = 'devtools-search-box';
+        searchBox.placeholder = '搜索日志...';
+        searchBox.addEventListener('input', (e) => {
+            searchQuery = e.target.value.toLowerCase();
+            renderLogs();
+        });
+
+        const clearBtn = document.createElement('button');
+        clearBtn.className = 'devtools-console-btn';
+        clearBtn.textContent = '清除';
+        clearBtn.addEventListener('click', clearConsole);
+
+        consoleHeader.appendChild(btnAll);
+        consoleHeader.appendChild(btnLog);
+        consoleHeader.appendChild(btnWarn);
+        consoleHeader.appendChild(btnError);
+        consoleHeader.appendChild(btnInfo);
+        consoleHeader.appendChild(searchBox);
+        consoleHeader.appendChild(clearBtn);
+
+        const consoleLogs = document.createElement('div');
+        consoleLogs.className = 'devtools-console';
+        consoleLogs.id = 'devtools-console-logs';
+
+        consolePanel.appendChild(consoleHeader);
+        consolePanel.appendChild(consoleLogs);
+
+        const elementsPanel = document.createElement('div');
+        elementsPanel.className = 'devtools-panel';
+        elementsPanel.id = 'devtools-panel-elements';
+
+        const elementsHeader = document.createElement('div');
+        elementsHeader.className = 'devtools-elements-header';
+
+        const elementSelectorBtn = document.createElement('button');
+        elementSelectorBtn.className = 'devtools-element-selector';
+        elementSelectorBtn.id = 'devtools-element-selector-btn';
+        elementSelectorBtn.textContent = '👆 选择元素';
+        elementSelectorBtn.addEventListener('click', toggleElementSelection);
+        elementsHeader.appendChild(elementSelectorBtn);
+
+        const elementTree = document.createElement('div');
+        elementTree.className = 'devtools-element-tree';
+        elementTree.id = 'devtools-element-tree';
+
+        elementsPanel.appendChild(elementsHeader);
+        elementsPanel.appendChild(elementTree);
+
+        const networkPanel = document.createElement('div');
+        networkPanel.className = 'devtools-panel';
+        networkPanel.id = 'devtools-panel-network';
+
+        const networkHeader = document.createElement('div');
+        networkHeader.className = 'devtools-network-header';
+
+        const clearNetworkBtn = document.createElement('button');
+        clearNetworkBtn.className = 'devtools-console-btn';
+        clearNetworkBtn.textContent = '清除';
+        clearNetworkBtn.addEventListener('click', clearNetwork);
+        networkHeader.appendChild(clearNetworkBtn);
+
+        const networkDetails = document.createElement('div');
+        networkDetails.className = 'devtools-network-details';
+        networkDetails.id = 'devtools-network-details';
+        networkDetails.style.display = 'none';
+
+        const networkList = document.createElement('div');
+        networkList.className = 'devtools-network';
+        networkList.id = 'devtools-network-list';
+
+        networkPanel.appendChild(networkHeader);
+        networkPanel.appendChild(networkDetails);
+        networkPanel.appendChild(networkList);
+
+        const resourcesPanel = document.createElement('div');
+        resourcesPanel.className = 'devtools-panel';
+        resourcesPanel.id = 'devtools-panel-resources';
+
+        const resourcesContainer = document.createElement('div');
+        resourcesContainer.className = 'devtools-resources';
+
+        const resourceTabs = document.createElement('div');
+        resourceTabs.className = 'devtools-resource-tabs';
+
+        const resourceTabList = [
+            { id: 'local', label: '本地存储' },
+            { id: 'session', label: '会话存储' },
+            { id: 'cookie', label: 'Cookie' },
+            { id: 'ua', label: 'User Agent' },
+            { id: 'script', label: '脚本' },
+            { id: 'stylesheet', label: '样式表' },
+            { id: 'iframe', label: '框架' },
+            { id: 'image', label: '图片' }
+        ];
+
+        resourceTabList.forEach(tab => {
+            const tabBtn = document.createElement('div');
+            tabBtn.className = 'devtools-resource-tab' + (tab.id === 'local' ? ' active' : '');
+            tabBtn.dataset.tab = tab.id;
+            tabBtn.textContent = tab.label;
+            tabBtn.addEventListener('click', () => switchResourceTab(tab.id));
+            resourceTabs.appendChild(tabBtn);
+        });
+
+        const resourceContent = document.createElement('div');
+        resourceContent.className = 'devtools-resource-content';
+        resourceContent.id = 'devtools-resource-content';
+
+        resourcesContainer.appendChild(resourceTabs);
+        resourcesContainer.appendChild(resourceContent);
+        resourcesPanel.appendChild(resourcesContainer);
+
+        content.appendChild(consolePanel);
+        content.appendChild(elementsPanel);
+        content.appendChild(networkPanel);
+        content.appendChild(resourcesPanel);
+
+        sidebar.appendChild(header);
+        sidebar.appendChild(tabsContainer);
+        sidebar.appendChild(content);
+
+        document.body.appendChild(sidebar);
+
+        const highlightOverlay = document.createElement('div');
+        highlightOverlay.className = 'devtools-highlight-overlay';
+        highlightOverlay.id = 'devtools-highlight-overlay';
+        highlightOverlay.style.display = 'none';
+        document.body.appendChild(highlightOverlay);
+    }
+
+    function toggleTheme() {
+        isDarkTheme = !isDarkTheme;
+        const sidebar = document.getElementById('devtools-sidebar');
+        const themeBtn = document.getElementById('devtools-theme-btn');
+
+        if (isDarkTheme) {
+            sidebar.classList.add('dark-theme');
+            themeBtn.textContent = '☀️';
+        } else {
+            sidebar.classList.remove('dark-theme');
+            themeBtn.textContent = '🌙';
+        }
+    }
+
+    function toggleSidebar() {
+        isOpen = !isOpen;
+        const sidebar = document.getElementById('devtools-sidebar');
+        const toggleBtn = document.getElementById('devtools-toggle-btn');
+
+        if (isOpen) {
+            sidebar.classList.add('open');
+            toggleBtn.classList.add('open');
+            toggleBtn.textContent = '◀';
+            document.body.classList.add('devtools-body-pushed');
+
+            if (activeTab === 'elements' && !elementTreeRendered) {
+                renderElementTree();
+                elementTreeRendered = true;
+            }
+            if (activeTab === 'resources') {
+                renderResourceContent();
+            }
+        } else {
+            sidebar.classList.remove('open');
+            toggleBtn.classList.remove('open');
+            toggleBtn.textContent = '▶';
+            document.body.classList.remove('devtools-body-pushed');
+            stopElementSelection();
+        }
+    }
+
+    function closeSidebar() {
+        if (isOpen) toggleSidebar();
+    }
+
+    function switchTab(tabId) {
+        activeTab = tabId;
+
+        document.querySelectorAll('.devtools-tab').forEach(tab => {
+            tab.classList.toggle('active', tab.dataset.tab === tabId);
+        });
+
+        document.querySelectorAll('.devtools-panel').forEach(panel => {
+            panel.classList.toggle('active', panel.id === 'devtools-panel-' + tabId);
+        });
+
+        if (tabId === 'elements' && !elementTreeRendered) {
+            renderElementTree();
+            elementTreeRendered = true;
+        }
+        if (tabId === 'resources') {
+            renderResourceContent();
+        }
+    }
+
+    function toggleFilterAll() {
+        const allActive = Object.values(activeLogFilters).every(v => v);
+        Object.keys(activeLogFilters).forEach(key => {
+            activeLogFilters[key] = !allActive;
+        });
+        updateFilterButtons();
+        renderLogs();
+    }
+
+    function toggleFilter(type) {
+        activeLogFilters[type] = !activeLogFilters[type];
+        updateFilterButtons();
+        renderLogs();
+    }
+
+    function updateFilterButtons() {
+        document.querySelectorAll('[data-filter]').forEach(btn => {
+            if (btn.dataset.filter === 'all') {
+                btn.classList.toggle('active', Object.values(activeLogFilters).every(v => v));
+            } else {
+                btn.classList.toggle('active', activeLogFilters[btn.dataset.filter]);
+            }
+        });
+    }
+
+    function hijackConsole() {
+        const originalLog = console.log;
+        const originalWarn = console.warn;
+        const originalError = console.error;
+        const originalInfo = console.info;
+
+        console.log = function(...args) { addLog('log', args); originalLog.apply(console, args); };
+        console.warn = function(...args) { addLog('warn', args); originalWarn.apply(console, args); };
+        console.error = function(...args) { addLog('error', args); originalError.apply(console, args); };
+        console.info = function(...args) { addLog('info', args); originalInfo.apply(console, args); };
+    }
+
+    function addLog(type, args) {
+        const message = args.map(arg => {
+            if (typeof arg === 'object') {
+                try {
+                    return JSON.stringify(arg, null, 2);
+                } catch {
+                    return String(arg);
+                }
+            }
+            return String(arg);
+        }).join(' ');
+
+        logs.push({
+            type,
+            message,
+            time: new Date().toLocaleTimeString(),
+            id: 'log-' + Date.now() + Math.random()
+        });
+
+        if (logs.length > 500) logs.shift();
+        renderLogs();
+    }
+
+    function renderLogs() {
+        const container = document.getElementById('devtools-console-logs');
+        if (!container) return;
+
+        const filteredLogs = logs.filter(log => {
+            if (!activeLogFilters[log.type]) return false;
+            if (searchQuery && !log.message.toLowerCase().includes(searchQuery)) return false;
+            return true;
+        });
+
+        container.innerHTML = filteredLogs.map(log => {
+            const isExpanded = expandedObjects.has(log.id);
+            const isObject = log.message.startsWith('{') || log.message.startsWith('[');
+            const displayMessage = isExpanded
+                ? '<pre style="margin: 4px 0 0 20px; white-space: pre-wrap;">' + escapeHtml(log.message) + '</pre>'
+                : escapeHtml(log.message.length > 200 ? log.message.slice(0, 200) + '...' : log.message);
+
+            return `
+                <div class="devtools-log-item ${log.type}" data-id="${log.id}">
+                    <span style="color: #666; margin-right: 8px;">[${log.time}]</span>
+                    ${isObject ? `<span class="devtools-log-toggle" onclick="event.stopPropagation(); window.devtoolsToggleObject('${log.id}')">${isExpanded ? '▼' : '▶'}</span>` : ''}
+                    <span>${displayMessage}</span>
+                </div>
+            `;
+        }).join('');
+
+        container.scrollTop = container.scrollHeight;
+    }
+
+    window.devtoolsToggleObject = function(id) {
+        if (expandedObjects.has(id)) {
+            expandedObjects.delete(id);
+        } else {
+            expandedObjects.add(id);
+        }
+        renderLogs();
+    };
+
+    function clearConsole() {
+        logs = [];
+        expandedObjects.clear();
+        renderLogs();
+    }
+
+    function hijackNetwork() {
+        const originalFetch = window.fetch;
+        window.fetch = function(...args) {
+            const url = typeof args[0] === 'string' ? args[0] : args[0].url;
+            const method = (typeof args[1] === 'object' && args[1]?.method) || 'GET';
+            const startTime = Date.now();
+            const requestId = Date.now() + Math.random().toString(36).substr(2, 9);
+
+            networkRequests.push({
+                id: requestId,
+                method,
+                url,
+                status: 'pending',
+                startTime,
+                endTime: null,
+                duration: null,
+                requestHeaders: args[1]?.headers ? JSON.stringify(args[1].headers, null, 2) : null
+            });
+
+            if (networkRequests.length > 200) networkRequests.shift();
+            renderNetworkRequests();
+
+            return originalFetch.apply(this, args).then(response => {
+                const request = networkRequests.find(r => r.id === requestId);
+                if (request) {
+                    request.status = response.status;
+                    request.endTime = Date.now();
+                    request.duration = request.endTime - request.startTime;
+                }
+                renderNetworkRequests();
+                return response;
+            }).catch(error => {
+                const request = networkRequests.find(r => r.id === requestId);
+                if (request) {
+                    request.status = '错误';
+                    request.endTime = Date.now();
+                    request.duration = request.endTime - request.startTime;
+                }
+                renderNetworkRequests();
+                throw error;
+            });
+        };
+
+        const originalOpen = XMLHttpRequest.prototype.open;
+        const originalSend = XMLHttpRequest.prototype.send;
+
+        XMLHttpRequest.prototype.open = function(method, url) {
+            this._requestMethod = method;
+            this._requestUrl = url;
+            this._requestId = Date.now() + Math.random().toString(36).substr(2, 9);
+            return originalOpen.apply(this, arguments);
+        };
+
+        XMLHttpRequest.prototype.send = function() {
+            const startTime = Date.now();
+            const requestId = this._requestId;
+
+            networkRequests.push({
+                id: requestId,
+                method: this._requestMethod || 'GET',
+                url: this._requestUrl,
+                status: 'pending',
+                startTime,
+                endTime: null,
+                duration: null
+            });
+
+            if (networkRequests.length > 200) networkRequests.shift();
+            renderNetworkRequests();
+
+            this.addEventListener('load', function() {
+                const request = networkRequests.find(r => r.id === requestId);
+                if (request) {
+                    request.status = this.status;
+                    request.endTime = Date.now();
+                    request.duration = request.endTime - request.startTime;
+                }
+                renderNetworkRequests();
+            });
+
+            this.addEventListener('error', function() {
+                const request = networkRequests.find(r => r.id === requestId);
+                if (request) {
+                    request.status = '错误';
+                    request.endTime = Date.now();
+                    request.duration = request.endTime - request.startTime;
+                }
+                renderNetworkRequests();
+            });
+
+            return originalSend.apply(this, arguments);
+        };
+    }
+
+    let lastNetworkRender = 0;
+
+    function renderNetworkRequests() {
+        const now = Date.now();
+        if (now - lastNetworkRender < 100) return;
+        lastNetworkRender = now;
+
+        const container = document.getElementById('devtools-network-list');
+        if (!container) return;
+
+        container.innerHTML = networkRequests.map(req => {
+            const statusClass = req.status === 'pending' ? '' : (req.status >= 200 && req.status < 400 ? 'success' : 'error');
+            const statusText = req.status === 'pending' ? '等待中' : req.status;
+            const durationText = req.duration ? req.duration + 'ms' : '-';
+            return `
+                <div class="devtools-network-item" onclick="window.devtoolsShowNetworkDetails('${req.id}')">
+                    <span class="devtools-network-method ${req.method}">${req.method}</span>
+                    <span class="devtools-network-url" title="${escapeHtml(req.url)}">${escapeHtml(req.url)}</span>
+                    <span class="devtools-network-status ${statusClass}">${statusText}</span>
+                    <span class="devtools-network-time">${durationText}</span>
+                </div>
+            `;
+        }).join('');
+    }
+
+    window.devtoolsShowNetworkDetails = function(id) {
+        const req = networkRequests.find(r => r.id === id);
+        if (!req) return;
+
+        const detailsDiv = document.getElementById('devtools-network-details');
+        detailsDiv.style.display = 'block';
+        detailsDiv.innerHTML = `
+            <div class="devtools-details-header">
+                <span class="devtools-details-title">${req.method} ${escapeHtml(req.url)}</span>
+                <span class="devtools-details-close" onclick="window.devtoolsHideNetworkDetails()">×</span>
+            </div>
+            <div class="devtools-details-item">
+                <div class="devtools-details-label">状态码</div>
+                <div class="devtools-details-value">${req.status}</div>
+            </div>
+            <div class="devtools-details-item">
+                <div class="devtools-details-label">耗时</div>
+                <div class="devtools-details-value">${req.duration ? req.duration + 'ms' : '-'}</div>
+            </div>
+            ${req.requestHeaders ? `
+                <div class="devtools-details-item">
+                    <div class="devtools-details-label">请求头</div>
+                    <div class="devtools-details-value"><pre>${escapeHtml(req.requestHeaders)}</pre></div>
+                </div>
+            ` : ''}
+        `;
+    };
+
+    window.devtoolsHideNetworkDetails = function() {
+        document.getElementById('devtools-network-details').style.display = 'none';
+    };
+
+    function clearNetwork() {
+        networkRequests = [];
+        renderNetworkRequests();
+        document.getElementById('devtools-network-details').style.display = 'none';
+    }
+
+    function renderElementTree() {
+        const container = document.getElementById('devtools-element-tree');
+        if (!container) return;
+
+        container.innerHTML = renderTreeNode(document.documentElement, 0);
+        setupTreeEvents();
+        applyExpandedState();
+    }
+
+    function renderTreeNode(element, level) {
+        const tagName = element.tagName?.toLowerCase() || '';
+        if (!tagName || level > 12) {
+            return '';
+        }
+
+        const hasChildren = element.children && element.children.length > 0 && level < 12;
+        const elementId = getElementId(element);
+        const isExpanded = expandedNodes.has(elementId);
+        const attrs = getAttributes(element);
+
+        let html = `
+            <div class="devtools-tree-node ${isExpanded ? 'expanded' : ''}" data-element-id="${elementId}" data-level="${level}">
+                ${hasChildren ? `<span class="devtools-tree-toggle">${isExpanded ? '▼' : '▶'}</span>` : '<span class="devtools-tree-toggle"> </span>'}
+                <span class="devtools-tag-name">&lt;${tagName}</span>
+                ${attrs}
+                <span class="devtools-tag-name">&gt;</span>
+            </div>
+        `;
+
+        if (hasChildren) {
+            html += `<div class="devtools-tree-children ${isExpanded ? 'open' : ''}">`;
+            for (let i = 0; i < element.children.length; i++) {
+                html += renderTreeNode(element.children[i], level + 1);
+            }
+            html += `</div>`;
+        }
+
+        return html;
+    }
+
+    function getAttributes(element) {
+        let attrs = '';
+        const limit = Math.min(element.attributes.length, 8);
+        for (let i = 0; i < limit; i++) {
+            const attr = element.attributes[i];
+            attrs += ` <span class="devtools-attr-name">${escapeHtml(attr.name)}</span>=<span class="devtools-attr-value">"${escapeHtml(attr.value.substr(0, 80))}${attr.value.length > 80 ? '...' : ''}"</span>`;
+        }
+        return attrs;
+    }
+
+    function getElementId(element) {
+        if (!element.__devtoolsId) {
+            element.__devtoolsId = 'el-' + (++elementIdCounter);
+        }
+        return element.__devtoolsId;
+    }
+
+    function setupTreeEvents() {
+        document.querySelectorAll('.devtools-tree-node').forEach(node => {
+            node.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const id = node.dataset.elementId;
+                const element = findElementById(id);
+
+                if (element) {
+                    highlightElement(element);
+                    selectTreeNode(node);
+                }
+
+                const toggle = node.querySelector('.devtools-tree-toggle');
+                const children = node.nextElementSibling;
+                if (toggle && children && children.classList.contains('devtools-tree-children')) {
+                    if (toggle.textContent === '▶') {
+                        toggle.textContent = '▼';
+                        children.classList.add('open');
+                        expandedNodes.add(id);
+                    } else {
+                        toggle.textContent = '▶';
+                        children.classList.remove('open');
+                        expandedNodes.delete(id);
+                    }
+                }
+            });
+        });
+    }
+
+    function findElementById(id) {
+        const allElements = document.querySelectorAll('*');
+        for (const el of allElements) {
+            if (el.__devtoolsId === id) {
+                return el;
+            }
+        }
+        return null;
+    }
+
+    function applyExpandedState() {
+        document.querySelectorAll('.devtools-tree-node').forEach(node => {
+            const id = node.dataset.elementId;
+            const children = node.nextElementSibling;
+            const toggle = node.querySelector('.devtools-tree-toggle');
+
+            if (expandedNodes.has(id) && children && children.classList.contains('devtools-tree-children')) {
+                children.classList.add('open');
+                if (toggle) toggle.textContent = '▼';
+            }
+        });
+    }
+
+    function selectTreeNode(node) {
+        document.querySelectorAll('.devtools-tree-node').forEach(n => {
+            n.classList.remove('selected');
+        });
+        node.classList.add('selected');
+    }
+
+    function highlightElement(element) {
+        const overlay = document.getElementById('devtools-highlight-overlay');
+        if (!element || !overlay) return;
+
+        const rect = element.getBoundingClientRect();
+        overlay.style.display = 'block';
+        overlay.style.top = rect.top + window.scrollY + 'px';
+        overlay.style.left = rect.left + window.scrollX + 'px';
+        overlay.style.width = rect.width + 'px';
+        overlay.style.height = rect.height + 'px';
+
+        selectedElement = element;
+    }
+
+    function toggleElementSelection() {
+        if (isSelectingElement) {
+            stopElementSelection();
+        } else {
+            startElementSelection();
+        }
+    }
+
+    function startElementSelection() {
+        stopElementSelection();
+        isSelectingElement = true;
+        document.body.style.cursor = 'crosshair';
+        const btn = document.getElementById('devtools-element-selector-btn');
+        if (btn) btn.classList.add('active');
+
+        document.addEventListener('mousemove', onElementHoverMove, true);
+        document.addEventListener('click', onElementClick, true);
+        document.addEventListener('keydown', onEscapeKeydown);
+    }
+
+    function stopElementSelection() {
+        if (!isSelectingElement) return;
+        isSelectingElement = false;
+        document.body.style.cursor = '';
+        const btn = document.getElementById('devtools-element-selector-btn');
+        if (btn) btn.classList.remove('active');
+
+        document.removeEventListener('mousemove', onElementHoverMove, true);
+        document.removeEventListener('click', onElementClick, true);
+        document.removeEventListener('keydown', onEscapeKeydown);
+
+        const overlay = document.getElementById('devtools-highlight-overlay');
+        if (overlay) overlay.style.display = 'none';
+    }
+
+    function onEscapeKeydown(e) {
+        if (e.key === 'Escape') {
+            stopElementSelection();
+        }
+    }
+
+    function onElementHoverMove(e) {
+        if (!isSelectingElement) return;
+        if (e.target.closest && (
+            e.target.closest('#devtools-sidebar') ||
+            e.target.closest('#devtools-toggle-btn') ||
+            e.target.closest('.devtools-element-picker-float')
+        )) {
+            return;
+        }
+
+        if (window.__highlightRaf) {
+            cancelAnimationFrame(window.__highlightRaf);
+        }
+        window.__highlightRaf = requestAnimationFrame(() => {
+            highlightElement(e.target);
+        });
+    }
+
+    function onElementClick(e) {
+        if (!isSelectingElement) return;
+
+        if (e.target.closest && (
+            e.target.closest('#devtools-sidebar') ||
+            e.target.closest('#devtools-toggle-btn') ||
+            e.target.closest('.devtools-element-picker-float')
+        )) {
+            return;
+        }
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        const element = e.target;
+
+        try {
+            highlightElement(element);
+
+            if (!elementTreeRendered) {
+                renderElementTree();
+                elementTreeRendered = true;
+            }
+
+            scrollToElementInTree(element);
+
+            if (activeTab !== 'elements') {
+                switchTab('elements');
+            }
+        } catch (err) {
+            console.error('元素定位失败:', err);
+        }
+
+        setTimeout(() => {
+            stopElementSelection();
+        }, 300);
+    }
+
+    function scrollToElementInTree(element) {
+        const elementId = element.__devtoolsId;
+        if (!elementId) return;
+
+        const node = document.querySelector(`.devtools-tree-node[data-element-id="${elementId}"]`);
+        if (!node) {
+            console.warn('未找到对应的树节点');
+            return;
+        }
+
+        expandParentNodes(node);
+        node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        selectTreeNode(node);
+    }
+
+    function expandParentNodes(node) {
+        let count = 0;
+        const maxDepth = 15;
+        let parent = node.parentElement;
+
+        while (parent && parent.classList.contains('devtools-tree-children') && count < maxDepth) {
+            parent.classList.add('open');
+            const prevSibling = parent.previousElementSibling;
+            if (prevSibling && prevSibling.classList.contains('devtools-tree-node')) {
+                const toggle = prevSibling.querySelector('.devtools-tree-toggle');
+                if (toggle) toggle.textContent = '▼';
+                expandedNodes.add(prevSibling.dataset.elementId);
+            }
+            parent = parent.parentElement;
+            count++;
+        }
+    }
+
+    function switchResourceTab(tabId) {
+        activeResourceTab = tabId;
+
+        document.querySelectorAll('.devtools-resource-tab').forEach(tab => {
+            tab.classList.toggle('active', tab.dataset.tab === tabId);
+        });
+
+        renderResourceContent();
+    }
+
+    function getLocalStorage() {
+        try {
+            const data = [];
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key) {
+                    try {
+                        data.push({ key, value: localStorage.getItem(key), id: i });
+                    } catch (e) {}
+                }
+            }
+            return data;
+        } catch (e) { return []; }
+    }
+
+    function getSessionStorage() {
+        try {
+            const data = [];
+            for (let i = 0; i < sessionStorage.length; i++) {
+                const key = sessionStorage.key(i);
+                if (key) {
+                    try {
+                        data.push({ key, value: sessionStorage.getItem(key), id: i });
+                    } catch (e) {}
+                }
+            }
+            return data;
+        } catch (e) { return []; }
+    }
+
+    function getCookies() {
+        try {
+            if (!document.cookie) return [];
+            return document.cookie.split(';').map((cookie, idx) => {
+                const parts = cookie.trim().split('=');
+                const name = parts[0];
+                const value = parts.slice(1).join('=');
+                return { key: name, value, id: idx };
+            }).filter(item => item.key);
+        } catch (e) { return []; }
+    }
+
+    function getScripts() {
+        try {
+            return Array.from(document.scripts).map((s, i) => ({
+                url: s.src || '(内联脚本)',
+                id: i
+            }));
+        } catch (e) { return []; }
+    }
+
+    function getStylesheets() {
+        try {
+            const hrefs = [];
+            Array.from(document.styleSheets).forEach(sheet => {
+                if (sheet.href) {
+                    hrefs.push({ url: sheet.href, id: hrefs.length });
+                }
+            });
+            Array.from(document.getElementsByTagName('link')).forEach(link => {
+                if (link.rel === 'stylesheet' && link.href) {
+                    if (!hrefs.find(h => h.url === link.href)) {
+                        hrefs.push({ url: link.href, id: hrefs.length });
+                    }
+                }
+            });
+            return hrefs;
+        } catch (e) { return []; }
+    }
+
+    function getImages() {
+        try {
+            return Array.from(document.images).map((img, i) => ({
+                url: img.src,
+                id: i
+            }));
+        } catch (e) { return []; }
+    }
+
+    function getIframes() {
+        try {
+            return Array.from(document.getElementsByTagName('iframe')).map((iframe, i) => ({
+                url: iframe.src || '(空)',
+                id: i
+            }));
+        } catch (e) { return []; }
+    }
+
+    function renderStorageTable(data, title, type) {
+        const container = document.getElementById('devtools-resource-content');
+        if (!container) return;
+
+        container.innerHTML = `
+            <div class="devtools-resource-header">
+                <span class="devtools-resource-title">${title}</span>
+                <span style="font-size: 12px; color: #666;">共 ${data.length} 个</span>
+            </div>
+            <table class="devtools-storage-table">
+                <thead>
+                    <tr>
+                        <th style="width: 30%;">键名</th>
+                        <th style="width: 50%;">值</th>
+                        <th style="width: 20%;">操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${data.map(item => `
+                        <tr data-id="${item.id}">
+                            <td>${escapeHtml(item.key)}</td>
+                            <td>${escapeHtml(item.value)}</td>
+                            <td>
+                                <button class="devtools-action-btn" onclick="window.devtoolsEditStorage('${escapeHtml(item.key)}', '${type}')">编辑</button>
+                                <button class="devtools-action-btn" onclick="window.devtoolsCopyValue('${escapeHtml(item.key)}', '${type}')">复制</button>
+                                <button class="devtools-action-btn" onclick="window.devtoolsDeleteStorage('${escapeHtml(item.key)}', '${type}')">删除</button>
+                            </td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+            ${['local', 'session'].includes(type) ? `
+                <button class="devtools-add-row" onclick="window.devtoolsAddStorage('${type}')">+ 添加</button>
+            ` : ''}
+        `;
+    }
+
+    window.devtoolsEditStorage = function(key, type) {
+        let value;
+        if (type === 'local') {
+            value = localStorage.getItem(key);
+        } else if (type === 'session') {
+            value = sessionStorage.getItem(key);
+        } else if (type === 'cookie') {
+            const cookies = getCookies();
+            const found = cookies.find(c => c.key === key);
+            value = found ? found.value : '';
+        }
+
+        const newValue = prompt(`编辑 "${key}" 的值:`, value);
+        if (newValue !== null) {
+            if (type === 'local') {
+                localStorage.setItem(key, newValue);
+            } else if (type === 'session') {
+                sessionStorage.setItem(key, newValue);
+            }
+            renderResourceContent();
+        }
+    };
+
+    window.devtoolsCopyValue = function(key, type) {
+        let value;
+        if (type === 'local') {
+            value = localStorage.getItem(key);
+        } else if (type === 'session') {
+            value = sessionStorage.getItem(key);
+        } else if (type === 'cookie') {
+            const cookies = getCookies();
+            const found = cookies.find(c => c.key === key);
+            value = found ? found.value : '';
+        }
+
+        if (value) {
+            navigator.clipboard.writeText(value).then(() => {
+                alert('已复制！');
+            });
+        }
+    };
+
+    window.devtoolsDeleteStorage = function(key, type) {
+        if (confirm(`确定删除 "${key}" 吗?`)) {
+            if (type === 'local') {
+                localStorage.removeItem(key);
+            } else if (type === 'session') {
+                sessionStorage.removeItem(key);
+            }
+            renderResourceContent();
+        }
+    };
+
+    window.devtoolsAddStorage = function(type) {
+        const key = prompt('请输入键名:');
+        if (!key) return;
+        const value = prompt('请输入值:', '');
+        if (value !== null) {
+            if (type === 'local') {
+                localStorage.setItem(key, value);
+            } else if (type === 'session') {
+                sessionStorage.setItem(key, value);
+            }
+            renderResourceContent();
+        }
+    };
+
+    function renderLinkList(data, title) {
+        const container = document.getElementById('devtools-resource-content');
+        if (!container) return;
+
+        container.innerHTML = `
+            <div class="devtools-resource-header">
+                <span class="devtools-resource-title">${title}</span>
+                <span style="font-size: 12px; color: #666;">共 ${data.length} 个</span>
+            </div>
+            <div class="devtools-resource-list">
+                ${data.map(item => `
+                    ${item.url.startsWith('http') || item.url.startsWith('//') ? `
+                        <a href="${escapeHtml(item.url)}" target="_blank" class="devtools-resource-link">
+                            ${escapeHtml(item.url)}
+                        </a>
+                    ` : `
+                        <div class="devtools-resource-link" style="cursor: default;">
+                            ${escapeHtml(item.url)}
+                        </div>
+                    `}
+                `).join('')}
+            </div>
+        `;
+    }
+
+    function renderImageGrid(data, title) {
+        const container = document.getElementById('devtools-resource-content');
+        if (!container) return;
+
+        const uniqueUrls = [...new Set(data.map(d => d.url))].slice(0, 100);
+        container.innerHTML = `
+            <div class="devtools-resource-header">
+                <span class="devtools-resource-title">${title}</span>
+                <span style="font-size: 12px; color: #666;">显示 ${uniqueUrls.length} 张（共 ${data.length}）</span>
+            </div>
+            <div class="devtools-image-grid">
+                ${uniqueUrls.map(url => `
+                    <div class="devtools-image-item">
+                        <img src="${escapeHtml(url)}" loading="lazy" alt="" onerror="this.style.display='none'">
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    }
+
+    let lastResourceRender = 0;
+    const RESOURCE_CACHE_TIME = 200;
+
+    function renderResourceContent() {
+        const now = Date.now();
+        if (now - lastResourceRender < RESOURCE_CACHE_TIME) return;
+        lastResourceRender = now;
+
+        switch (activeResourceTab) {
+            case 'local':
+                renderStorageTable(getLocalStorage(), '本地存储', 'local');
+                break;
+            case 'session':
+                renderStorageTable(getSessionStorage(), '会话存储', 'session');
+                break;
+            case 'cookie':
+                renderStorageTable(getCookies(), 'Cookie', 'cookie');
+                break;
+            case 'script':
+                renderLinkList(getScripts(), '脚本');
+                break;
+            case 'stylesheet':
+                renderLinkList(getStylesheets(), '样式表');
+                break;
+            case 'iframe':
+                renderLinkList(getIframes(), '框架');
+                break;
+            case 'ua':
+                renderUserAgent();
+                break;
+            case 'image':
+                renderImageGrid(getImages(), '图片');
+                break;
+        }
+    }
+
+    function getUserAgent() {
+        return navigator.userAgent || '未知';
+    }
+
+    function renderUserAgent() {
+        const container = document.getElementById('devtools-resource-content');
+        if (!container) return;
+
+        const ua = getUserAgent();
+        container.innerHTML = `
+            <div class="devtools-resource-header">
+                <span class="devtools-resource-title">User Agent</span>
+            </div>
+            <div style="padding: 8px; font-size: 12px;">
+                <div style="margin-bottom: 12px; padding: 12px; background: var(--bg-hover, #f5f5f5); border-radius: 4px; word-break: break-all; font-family: Consolas, Monaco, monospace;">
+                    ${escapeHtml(ua)}
+                </div>
+                <button class="devtools-action-btn" onclick="navigator.clipboard.writeText('${escapeHtml(ua)}').then(() => alert('已复制！'))">
+                    复制
+                </button>
+            </div>
+        `;
+    }
+
+    function addKeyboardShortcut() {
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'I') {
+                e.preventDefault();
+                toggleSidebar();
+            }
+        });
+    }
+
+    function checkEnvironment() {
+        if (window.location.protocol === 'chrome-extension:' ||
+            window.location.protocol === 'about:') {
+            return false;
+        }
+        if (window.top !== window.self) {
+            return false;
+        }
+        if (document.getElementById('devtools-sidebar')) {
+            return false;
+        }
+        return true;
+    }
+
+    if (checkEnvironment()) {
+        createStyles();
+        createSidebar();
+        hijackConsole();
+        hijackNetwork();
+        addKeyboardShortcut();
+
+        console.log('%c 开发者工具已加载！', 'background: #0078d4; color: white; padding: 4px 12px; border-radius: 4px;');
+        console.log('%c 点击右侧按钮或按 Ctrl+Shift+I 打开调试面板', 'color: #666;');
+    }
+})();
