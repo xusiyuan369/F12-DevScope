@@ -1462,7 +1462,7 @@
                         if (!networkRequests.some(r => r.id === id)) {
                             networkRequests.push({
                                 id, method: 'GET', url: entry.name,
-                                status: entry.transferSize ? 200 : 0,
+                                status: entry.responseStatus || (entry.transferSize ? 200 : 0),
                                 startTime: entry.startTime, duration: entry.duration,
                                 type: 'resource',
                                 initiatorType: entry.initiatorType,
@@ -1477,7 +1477,7 @@
                 });
             });
             po.observe({ type: 'resource', buffered: true });
-            
+
             // 立即获取已存在的资源条目（页面初始加载的资源）
             performance.getEntriesByType('resource').forEach(entry => {
                 if (entry.name.startsWith('http')) {
@@ -1485,7 +1485,7 @@
                     if (!networkRequests.some(r => r.id === id)) {
                         networkRequests.push({
                             id, method: 'GET', url: entry.name,
-                            status: entry.transferSize ? 200 : 0,
+                            status: entry.responseStatus || (entry.transferSize ? 200 : 0),
                             startTime: entry.startTime, duration: entry.duration,
                             type: 'resource',
                             initiatorType: entry.initiatorType,
@@ -1500,6 +1500,58 @@
             renderNetworkRequests();
             } catch(e) {}
         }
+    }
+
+    // ==== 资源请求响应体捕获 ====
+    let _captureResTimer = null;
+    const _captureResDone = new Set();
+    const _captureResPending = new Set();
+    const _maxCaptureBody = 50000;
+
+    function _isTextResource(url) {
+        return /\.(js|css|json|html?|xml|txt|svg|csv|text)(\?|$)/i.test(url);
+    }
+
+    function scheduleCaptureResourceResponses() {
+        if (_captureResTimer) return;
+        _captureResTimer = setTimeout(function() {
+            _captureResTimer = null;
+            _doCaptureResourceResponses();
+        }, 300);
+    }
+
+    function _doCaptureResourceResponses() {
+        networkRequests.forEach(function(req) {
+            if (req.type !== 'resource') return;
+            if (req.responseBody || req.responseHeaders) return;
+            if (_captureResDone.has(req.id) || _captureResPending.has(req.id)) return;
+            if (!_isTextResource(req.url)) return;
+            try {
+                var u = new URL(req.url, location.href);
+                if (u.origin !== location.origin) return;
+            } catch { return; }
+            _captureResPending.add(req.id);
+            fetch(req.url, { credentials: 'include', cache: 'reload' })
+                .then(function(res) {
+                    var headers = {};
+                    res.headers.forEach(function(v, k) { headers[k] = v; });
+                    req.responseHeaders = safeStringify(headers);
+                    req.status = req.status || res.status;
+                    return res.text();
+                })
+                .then(function(text) {
+                    req.responseBody = text.length > _maxCaptureBody
+                        ? text.substring(0, _maxCaptureBody) + '\n\n[已截断...]'
+                        : text;
+                    networkResponseMap.set(req.id, req.responseBody);
+                    if (req.responseBody) req.transferSize = req.transferSize || new Blob([req.responseBody]).size;
+                })
+                .catch(function() {})
+                .finally(function() {
+                    _captureResPending.delete(req.id);
+                    _captureResDone.add(req.id);
+                });
+        });
     }
 
     function getStatusClass(status) {
@@ -1586,6 +1638,7 @@
             const typeLabel = getTypeLabel(req);
             return '<div class="devtools-network-item" data-req-id="' + req.id.replace(/"/g, '&quot;') + '"><span class="devtools-network-method">' + escapeHtml(req.method) + '</span><span class="devtools-network-status ' + statusClass + '">' + escapeHtml(statusText) + '</span><span class="devtools-network-time">' + escapeHtml(timeText) + '</span><span class="devtools-network-url">' + escapeHtml(req.url) + '</span><span class="devtools-network-type">' + escapeHtml(typeLabel) + '</span></div>';
         }).join('');
+        scheduleCaptureResourceResponses();
     }
 
     window.devtoolsShowNetworkDetails = function(id) {
