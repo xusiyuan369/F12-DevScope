@@ -74,12 +74,27 @@
             .replace(/'/g, '&#039;');
     }
 
+    function isSafeUrl(url) {
+        try {
+            const u = new URL(url, location.href);
+            return ['http:', 'https:', 'data:'].includes(u.protocol);
+        } catch { return false; }
+    }
+
     function safeStringify(obj) {
         try {
             return JSON.stringify(obj, null, 2);
         } catch {
             return String(obj);
         }
+    }
+
+    function formDataToString(fd) {
+        try {
+            const entries = [];
+            fd.forEach((value, key) => entries.push(key + '=' + (typeof value === 'string' ? value : '[File]')));
+            return entries.join('&');
+        } catch { return '[FormData]'; }
     }
 
     // 恢复跳转前日志
@@ -225,14 +240,18 @@
             .devtools-element-selector.active { background: var(--bg-btn-active, #000); color: #fff; }
             .devtools-element-container { display: flex; flex: 1; overflow: hidden; }
             .devtools-element-tree {
-                flex: 1; overflow-y: auto; font-family: Consolas, monospace; font-size: 11px;
+                flex: 1; overflow: auto; font-family: Consolas, monospace; font-size: 11px;
                 color: var(--text-primary, #333);
             }
-            .devtools-tree-node { padding: 2px 4px; cursor: pointer; user-select: none; word-break: break-all; white-space: pre-wrap; }
+            .devtools-tree-node { display: flex; align-items: flex-start; padding: 1px 0; cursor: pointer; user-select: none; min-height: 18px; }
+            .devtools-tag-content { white-space: nowrap; }
             .devtools-tree-node:hover { background: rgba(0, 120, 212, 0.08); }
             .devtools-tree-node.selected { background: rgba(0, 120, 212, 0.15); color: inherit; }
-            .devtools-tree-toggle { display: inline-block; width: 16px; text-align: center; color: var(--text-secondary, #666); }
-            .devtools-tree-children { margin-left: 16px; display: none; }
+            .devtools-indent-guide { width: 16px; flex-shrink: 0; height: 18px; box-sizing: border-box; }
+            .devtools-indent-guide.line { border-left: 1px solid var(--border-light, #ccc); }
+            .devtools-indent-guide.empty { border-left: 1px solid transparent; }
+            .devtools-tree-toggle { width: 16px; flex-shrink: 0; text-align: center; color: var(--text-secondary, #666); line-height: 18px; }
+            .devtools-tree-children { display: none; }
             .devtools-tree-children.open { display: block; }
             .devtools-tag-name { color: #569cd6; }
             .devtools-attr-name { color: #9cdcfe; }
@@ -776,16 +795,36 @@
         });
         document.getElementById('devtools-reset-settings').addEventListener('click', () => {
             if (confirm('确定要重置所有设置吗？')) {
-                GM_setValue('devtools-sidebar-mode', isMobile ? 'overlay' : 'push');
-                GM_setValue('devtools-visual-width', isMobile ? 320 : 420);
-                GM_setValue('devtools-sidebar-zoom', isMobile ? 0.9 : 1);
+                const defaultMode = isMobile ? 'overlay' : 'push';
+                const defaultWidth = isMobile ? 320 : 420;
+                const defaultZoom = isMobile ? 0.9 : 1;
+                GM_setValue('devtools-sidebar-mode', defaultMode);
+                GM_setValue('devtools-visual-width', defaultWidth);
+                GM_setValue('devtools-sidebar-zoom', defaultZoom);
                 GM_setValue('devtools-sidebar-opacity', 1);
                 GM_setValue('devtools-dark-theme', false);
                 GM_setValue('devtools-auto-inspector', false);
                 GM_setValue('devtools-prefetch-post', false);
                 GM_setValue('devtools-fn-trace', false);
                 GM_setValue('devtools-dom-observe', false);
-                location.reload();
+                sidebarMode = defaultMode;
+                visualWidth = defaultWidth;
+                sidebarZoom = defaultZoom;
+                sidebarOpacity = 1;
+                document.getElementById('devtools-setting-mode').value = defaultMode;
+                document.getElementById('devtools-setting-width').value = defaultWidth;
+                document.getElementById('devtools-setting-width-val').textContent = defaultWidth + 'px';
+                document.getElementById('devtools-setting-zoom').value = defaultZoom;
+                document.getElementById('devtools-setting-zoom-val').textContent = defaultZoom.toFixed(2) + 'x';
+                document.getElementById('devtools-setting-opacity').value = 1;
+                document.getElementById('devtools-setting-opacity-val').textContent = '1';
+                document.getElementById('devtools-setting-auto-inspector').checked = false;
+                document.getElementById('devtools-setting-prefetch-post').checked = false;
+                document.getElementById('devtools-setting-fn-trace').checked = false;
+                document.getElementById('devtools-setting-dom-observe').checked = false;
+                applySidebarSettings();
+                if (isDarkTheme) { isDarkTheme = false; toggleTheme(); }
+                showToast('设置已重置');
             }
         });
         document.addEventListener('click', e => {
@@ -1464,16 +1503,16 @@
                     // 资源类请求
                     if (req.type === 'resource') {
                         const initType = req.initiatorType || '';
+                        if (typeFilter === 'XHR') return initType === 'xmlhttprequest' || initType === 'fetch';
                         if (typeFilter === 'JS') return initType === 'script' || /\.js(\?|$)/.test(req.url);
                         if (typeFilter === 'CSS') return initType === 'css' || /\.css(\?|$)/.test(req.url);
                         if (typeFilter === 'Img') return initType === 'img' || initType === 'image' || /\.(png|jpg|jpeg|gif|svg|webp|ico)(\?|$)/.test(req.url);
                         if (typeFilter === 'Other') {
-                            // 不是 JS/CSS/Img 的资源（如 font, media 等）
-                            if (initType === 'script' || initType === 'css' || initType === 'img' || initType === 'image') return false;
+                            // 不是 XHR/JS/CSS/Img 的资源（如 font, media 等）
+                            if (['xmlhttprequest','fetch','script','css','img','image'].includes(initType)) return false;
                             if (/\.(js|css|png|jpg|jpeg|gif|svg|webp|ico)(\?|$)/.test(req.url)) return false;
                             return true;
                         }
-                        if (typeFilter === 'XHR') return false; // 资源类不属于 XHR
                     }
                 }
             }
@@ -1524,6 +1563,7 @@
         const origAssign = window.location.assign.bind(window.location);
         const origReplace = window.location.replace.bind(window.location);
         const origReload = window.location.reload.bind(window.location);
+        const origFormSubmit = HTMLFormElement.prototype.submit;
 
         // 保存原始 href 属性描述符
         const origHrefDesc = Object.getOwnPropertyDescriptor(window.location, 'href');
@@ -1606,19 +1646,19 @@
             e.preventDefault();
             const method = (form.method || 'GET').toUpperCase();
             const url = form.action || window.location.href;
-            const body = new FormData(form);
             if (prefetchPostForms && method === 'POST') {
-                // 传递给 captureNavigation，不再传自定义 headers，让 GM_xmlhttpRequest 自动处理 FormData
-                captureNavigation(method, url, null, body, () => { form.submit(); });
+                const body = new FormData(form);
+                captureNavigation(method, url, null, body, () => { origFormSubmit.call(form); });
             } else {
                 const id = Date.now() + Math.random().toString(36).substr(2, 9);
+                const bodyStr = method !== 'GET' ? formDataToString(new FormData(form)) : null;
                 networkRequests.push({
                     id, method, url, status: 'submitted', startTime: Date.now(),
-                    type: 'navigation', requestBody: body ? safeStringify(body) : null
+                    type: 'navigation', requestBody: bodyStr
                 });
                 trimNetworkRequests();
                 saveLogsForNavigation();
-                form.submit();
+                origFormSubmit.call(form);
             }
         }, true);
         // 劫持 history API（记录 SPA 路由）
@@ -1774,7 +1814,8 @@
         applyExpandedState();
     }
 
-    function renderTreeNode(element, level) {
+    function renderTreeNode(element, level, ancestorLastFlags) {
+        ancestorLastFlags = ancestorLastFlags || [];
         const tagName = element.tagName?.toLowerCase() || '';
         if (!tagName || level > 15 || totalNodesRendered >= MAX_NODES) return '';
         totalNodesRendered++;
@@ -1782,17 +1823,26 @@
         const elementId = getElementId(element);
         const isExpanded = expandedNodes.has(elementId);
         const attrs = getAttributes(element);
-        let html = `<div class="devtools-tree-node" data-element-id="${elementId}" data-level="${level}">${hasChildren ? `<span class="devtools-tree-toggle">${isExpanded?'▼':'▶'}</span>` : '<span class="devtools-tree-toggle"> </span>'}<span class="devtools-tag-name">&lt;${tagName}</span>${attrs}<span class="devtools-tag-name">&gt;</span></div>`;
+
+        // 生成缩进引导线
+        let guides = '';
+        for (let i = 0; i < ancestorLastFlags.length; i++) {
+            guides += `<span class="devtools-indent-guide ${ancestorLastFlags[i] ? 'empty' : 'line'}"></span>`;
+        }
+
+        let html = `<div class="devtools-tree-node" data-element-id="${elementId}" data-level="${level}">${guides}${hasChildren ? `<span class="devtools-tree-toggle">${isExpanded?'▼':'▶'}</span>` : '<span class="devtools-tree-toggle"> </span>'}<span class="devtools-tag-content"><span class="devtools-tag-name">&lt;${tagName}</span>${attrs}<span class="devtools-tag-name">&gt;</span></span></div>`;
 
         if (hasChildren) {
             html += `<div class="devtools-tree-children ${isExpanded?'open':''}">`;
-            const maxChildren = Math.min(element.children.length, 100);
+            const childCount = element.children.length;
+            const maxChildren = Math.min(childCount, 100);
             for (let i = 0; i < maxChildren; i++) {
                 if (totalNodesRendered >= MAX_NODES) {
                     html += '<div style="padding:2px 4px;color:#999;font-size:10px;">节点过多，已截断</div>';
                     break;
                 }
-                html += renderTreeNode(element.children[i], level + 1);
+                const isLast = (i === maxChildren - 1) || (i === childCount - 1);
+                html += renderTreeNode(element.children[i], level + 1, ancestorLastFlags.concat(isLast));
             }
             html += `</div>`;
         }
@@ -1904,7 +1954,9 @@
         document.removeEventListener('mousemove', onElementHoverMove, true);
         document.removeEventListener('click', onElementClick, true);
         document.removeEventListener('keydown', onEscapeKeydown);
-        // 无条件清除高亮覆盖层
+        // 清除高亮覆盖层和选中状态
+        selectedElement = null;
+        if (scrollRaf) { cancelAnimationFrame(scrollRaf); scrollRaf = null; }
         const overlay = document.getElementById('devtools-highlight-overlay');
         if (overlay) overlay.style.display = 'none';
     }
@@ -2370,7 +2422,7 @@
 
     window.devtoolsEditStorage = function(key, type) {
         if (type === 'cookie') {
-            const cookieValue = document.cookie.split(';').find(c => c.trim().startsWith(key + '='))?.split('=')[1] || '';
+            const cookieValue = document.cookie.split(';').find(c => c.trim().startsWith(key + '='))?.split(/=(.+)/)[1] || '';
             const newValue = prompt('编辑 "' + key + '" 的值:', decodeURIComponent(cookieValue));
             if (newValue !== null) {
                 document.cookie = key + '=' + encodeURIComponent(newValue) + ';path=/';
@@ -2390,7 +2442,7 @@
     window.devtoolsCopyStorageValue = function(key, type) {
         let value = '';
         if (type === 'cookie') {
-            value = document.cookie.split(';').find(c => c.trim().startsWith(key + '='))?.split('=')[1] || '';
+            value = document.cookie.split(';').find(c => c.trim().startsWith(key + '='))?.split(/=(.+)/)[1] || '';
             value = decodeURIComponent(value);
         } else {
             value = type === 'local' ? localStorage.getItem(key) || '' : sessionStorage.getItem(key) || '';
@@ -2438,7 +2490,10 @@
         const container = document.getElementById('devtools-resource-content');
         const uniqueUrls = [...new Set(data.map(d => d.url))].slice(0, 100);
         let html = '<div class="devtools-resource-header"><span class="devtools-resource-title">' + title + '</span><span style="font-size:11px;color:#999;">显示 ' + uniqueUrls.length + ' 张（共 ' + data.length + '）</span></div><div class="devtools-image-grid">';
-        uniqueUrls.forEach(url => { html += '<div class="devtools-image-item"><img src="' + escapeHtml(url) + '" loading="lazy" alt="" onerror="this.style.display=\'none\';this.parentElement.innerHTML=\'<div style=&quot;padding:10px;text-align:center;color:#999;font-size:10px;&quot;>加载失败</div>\'"></div>'; });
+        uniqueUrls.forEach(url => {
+            if (!isSafeUrl(url)) return;
+            html += '<div class="devtools-image-item"><img src="' + escapeHtml(url) + '" loading="lazy" alt=""></div>';
+        });
         html += '</div>';
         container.innerHTML = html;
     }
@@ -2556,18 +2611,22 @@
                 mutations.forEach(m => {
                     m.removedNodes.forEach(node => {
                         if (node.nodeType === 1) {
-                            const id = elementToIdMap.get(node);
-                            if (id) {
-                                elementIdToElementMap.delete(id);
-                                elementToIdMap.delete(node);
-                            }
+                            const cleanup = el => {
+                                const id = elementToIdMap.get(el);
+                                if (id) {
+                                    elementIdToElementMap.delete(id);
+                                    elementToIdMap.delete(el);
+                                }
+                            };
+                            cleanup(node);
+                            if (node.querySelectorAll) node.querySelectorAll('*').forEach(cleanup);
                         }
                     });
                 });
             });
             window.__devscope_elementObserver.observe(document.documentElement, { childList: true, subtree: true });
         }
-        console.log('DevScope v6.0.8 已加载');
+        console.log('DevScope v6.2.1 已加载');
     }
 
     if (document.body) {
