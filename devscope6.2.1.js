@@ -244,6 +244,7 @@
                 color: var(--text-primary, #333);
             }
             .devtools-tree-node { display: flex; align-items: flex-start; padding: 1px 0; cursor: pointer; user-select: none; min-height: 18px; }
+            .devtools-tag-content { white-space: nowrap; }
             .devtools-tree-node:hover { background: rgba(0, 120, 212, 0.08); }
             .devtools-tree-node.selected { background: rgba(0, 120, 212, 0.15); color: inherit; }
             .devtools-indent-guide { width: 16px; flex-shrink: 0; height: 18px; box-sizing: border-box; }
@@ -1829,7 +1830,7 @@
             guides += `<span class="devtools-indent-guide ${ancestorLastFlags[i] ? 'empty' : 'line'}"></span>`;
         }
 
-        let html = `<div class="devtools-tree-node" data-element-id="${elementId}" data-level="${level}">${guides}${hasChildren ? `<span class="devtools-tree-toggle">${isExpanded?'▼':'▶'}</span>` : '<span class="devtools-tree-toggle"> </span>'}<span class="devtools-tag-name">&lt;${tagName}</span>${attrs}<span class="devtools-tag-name">&gt;</span></div>`;
+        let html = `<div class="devtools-tree-node" data-element-id="${elementId}" data-level="${level}">${guides}${hasChildren ? `<span class="devtools-tree-toggle">${isExpanded?'▼':'▶'}</span>` : '<span class="devtools-tree-toggle"> </span>'}<span class="devtools-tag-content"><span class="devtools-tag-name">&lt;${tagName}</span>${attrs}<span class="devtools-tag-name">&gt;</span></span></div>`;
 
         if (hasChildren) {
             html += `<div class="devtools-tree-children ${isExpanded?'open':''}">`;
