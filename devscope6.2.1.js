@@ -74,6 +74,26 @@
             .replace(/'/g, '&#039;');
     }
 
+    // 事件委托辅助：为容器添加 data-action 点击委托
+    function _delegate(container, handler) {
+        if (!container || container._delegated) return;
+        container._delegated = true;
+        container.addEventListener('click', function(e) {
+            var el = e.target.closest('[data-action]');
+            if (!el) return;
+            e.stopPropagation();
+            handler(el.dataset.action, el, e);
+        });
+    }
+
+    // 复制容器文本 + 提示
+    function _clipToast(containerId) {
+        var el = document.getElementById(containerId);
+        if (!el) return;
+        var text = el.innerText || el.textContent;
+        navigator.clipboard.writeText(text).then(function() { showToast('已复制'); }).catch(function() { showToast('复制失败'); });
+    }
+
     function isSafeUrl(url) {
         try {
             const u = new URL(url, location.href);
@@ -765,6 +785,69 @@
     }
 
     // ============ 事件监听 ============
+    // 集中事件委托：为所有动态渲染容器一次性绑定 data-action 点击处理
+    function initEventDelegation() {
+        // 控制台日志展开/折叠
+        var logsCtn = document.getElementById('devtools-console-logs');
+        if (logsCtn) logsCtn.addEventListener('click', function(e) {
+            var el = e.target.closest('[data-action]');
+            if (!el) return;
+            if (el.dataset.action === 'toggle-log') {
+                e.stopPropagation();
+                var id = el.dataset.logId;
+                if (expandedObjects.has(id)) expandedObjects.delete(id);
+                else expandedObjects.add(id);
+                renderLogs();
+            }
+        });
+
+        // 工具面板所有按钮
+        var toolsCtn = document.getElementById('devtools-tools-content');
+        if (toolsCtn) toolsCtn.addEventListener('click', function(e) {
+            var el = e.target.closest('[data-action]');
+            if (!el) return;
+            var action = el.dataset.action;
+            if (action === 'regex-test') window.devtoolsTestRegex();
+            else if (action === 'selector-test') window.devtoolsTestSelector();
+            else if (action === 'selector-clear') window.devtoolsClearSelectorHighlight();
+            else if (action === 'selector-result') {
+                document.querySelectorAll('.devtools-selector-result').forEach(function(r) { r.classList.remove('selected'); });
+                el.classList.add('selected');
+                var idx = parseInt(el.dataset.index);
+                var element = window.__selectorElements && window.__selectorElements[idx];
+                if (element) { element.scrollIntoView({ behavior: 'smooth', block: 'center' }); highlightElement(element); }
+            }
+            else if (action === 'format-json') window.devtoolsFormatJson();
+            else if (action === 'minify-json') window.devtoolsMinifyJson();
+            else if (action === 'copy-json') window.devtoolsCopyJson();
+            else if (action === 'string-op') window.devtoolsStringOp(el.dataset.op);
+            else if (action === 'send-request') window.devtoolsSendRequest();
+            else if (action === 'copy-result') _clipToast(el.dataset.target);
+        });
+
+        // 资源面板
+        var resCtn = document.getElementById('devtools-resource-content');
+        if (resCtn) resCtn.addEventListener('click', function(e) {
+            var el = e.target.closest('[data-action]');
+            if (!el) return;
+            var action = el.dataset.action;
+            if (action === 'edit-storage') window.devtoolsEditStorage(el.dataset.key, el.dataset.storageType);
+            else if (action === 'copy-storage') window.devtoolsCopyStorageValue(el.dataset.key, el.dataset.storageType);
+            else if (action === 'delete-storage') window.devtoolsDeleteStorage(el.dataset.key, el.dataset.storageType);
+            else if (action === 'add-row') window.devtoolsAddStorage(el.dataset.storageType);
+            else if (action === 'copy-ua') { navigator.clipboard.writeText(window.__uaString).then(function() { showToast('已复制'); }).catch(function() { showToast('复制失败'); }); }
+            else if (action === 'refresh') location.reload();
+        });
+
+        // 性能面板
+        var perfCtn = document.getElementById('devtools-performance-content');
+        if (perfCtn) perfCtn.addEventListener('click', function(e) {
+            var el = e.target.closest('[data-action]');
+            if (!el) return;
+            if (el.dataset.action === 'refresh-perf') { performance.clearResourceTimings(); renderPerformanceContent(); }
+        });
+    }
+
     function initEventListeners() {
         document.getElementById('devtools-settings-btn').addEventListener('click', e => {
             e.stopPropagation();
@@ -1257,7 +1340,7 @@
                 ? '<pre style="margin:4px 0 0 20px;white-space:pre-wrap;font-size:11px;">' + escapeHtml(log.message) + '</pre>'
                 : escapeHtml(log.message.length > 500 ? log.message.slice(0, 500) + '...' : log.message);
             const toggleHtml = isObject
-                ? '<span class="devtools-log-toggle" onclick="event.stopPropagation();window.devtoolsToggleObject(\'' + log.id.replace(/'/g, "\\'") + '\')">' + (isExpanded ? '▼' : '▶') + '</span>'
+                ? '<span class="devtools-log-toggle" data-action="toggle-log" data-log-id="' + escapeHtml(log.id) + '">' + (isExpanded ? '▼' : '▶') + '</span>'
                 : '';
             return '<div class="devtools-log-item ' + escapeHtml(log.type) + '"><span style="color:#666;margin-right:8px;font-size:10px;">[' + escapeHtml(log.time) + ']</span>' + toggleHtml + '<span>' + displayMessage + '</span></div>';
         }).join('');
@@ -2292,7 +2375,7 @@
 
     function renderRegexTool() {
         const container = document.getElementById('devtools-tools-content');
-        container.innerHTML = '<div class="devtools-input-group"><label class="devtools-input-label">正则表达式</label><input type="text" class="devtools-input" id="devtools-regex-pattern" placeholder="例如: \\d+ 或 /\\w+/gi"></div><div class="devtools-input-group"><label class="devtools-input-label">测试文本</label><textarea class="devtools-textarea" id="devtools-regex-text" placeholder="输入要测试的文本..."></textarea></div><button class="devtools-tool-btn primary" onclick="window.devtoolsTestRegex()">测试</button><div id="devtools-regex-result"></div>';
+        container.innerHTML = '<div class="devtools-input-group"><label class="devtools-input-label">正则表达式</label><input type="text" class="devtools-input" id="devtools-regex-pattern" placeholder="例如: \\d+ 或 /\\w+/gi"></div><div class="devtools-input-group"><label class="devtools-input-label">测试文本</label><textarea class="devtools-textarea" id="devtools-regex-text" placeholder="输入要测试的文本..."></textarea></div><button class="devtools-tool-btn primary" data-action="regex-test">测试</button><div id="devtools-regex-result"></div>';
     }
 
     window.devtoolsTestRegex = function() {
@@ -2324,14 +2407,14 @@
             matches.forEach((m, i) => {
                 html += '<div style="margin:4px 0;padding:6px;background:var(--bg-hover,#f5f5f5);border-radius:3px;"><div><strong>匹配 ' + (i+1) + ':</strong> <span class="devtools-match">' + escapeHtml(m.full) + '</span></div><div>位置: ' + m.index + '</div>' + (m.groups.length ? '<div>捕获组: ' + m.groups.map((g,j) => '<span class="devtools-group">[' + (j+1) + '] ' + escapeHtml(g || '空') + '</span>').join(' ') + '</div>' : '') + '</div>';
             });
-            html += '<button class="devtools-console-btn" onclick="window.devtoolsCopyToolResult(\'devtools-regex-result\')" style="margin-top:8px;">复制结果</button>';
+            html += '<button class="devtools-console-btn" data-action="copy-result" data-target="devtools-regex-result" style="margin-top:8px;">复制结果</button>';
             resultDiv.innerHTML = html;
         } catch (e) { resultDiv.innerHTML = '<div class="devtools-result-box" style="color:#c00;">正则表达式错误: ' + escapeHtml(e.message) + '</div>'; }
     };
 
     function renderSelectorTool() {
         const container = document.getElementById('devtools-tools-content');
-        container.innerHTML = '<div class="devtools-input-group"><label class="devtools-input-label">CSS选择器或XPath</label><input type="text" class="devtools-input" id="devtools-selector-input" placeholder="例如: div.content 或 //div[@class=\'content\']"></div><div style="margin-bottom:10px;"><button class="devtools-tool-btn primary" onclick="window.devtoolsTestSelector()">查询</button><button class="devtools-tool-btn" onclick="window.devtoolsClearSelectorHighlight()">清除高亮</button></div><div id="devtools-selector-result"></div>';
+        container.innerHTML = '<div class="devtools-input-group"><label class="devtools-input-label">CSS选择器或XPath</label><input type="text" class="devtools-input" id="devtools-selector-input" placeholder="例如: div.content 或 //div[@class=\'content\']"></div><div style="margin-bottom:10px;"><button class="devtools-tool-btn primary" data-action="selector-test">查询</button><button class="devtools-tool-btn" data-action="selector-clear">清除高亮</button></div><div id="devtools-selector-result"></div>';
     }
 
     window.devtoolsTestSelector = function() {
@@ -2351,9 +2434,9 @@
                 const tag = el.tagName.toLowerCase();
                 const id = el.id ? '#' + el.id : '';
                 const cls = el.className && typeof el.className === 'string' ? '.' + el.className.split(' ')[0] : '';
-                html += '<div class="devtools-selector-result" onclick="window.devtoolsHighlightSelectorElement(this, ' + i + ')" data-index="' + i + '">[' + (i+1) + '] &lt;' + tag + id + cls + '&gt; - ' + escapeHtml((el.textContent || '').substring(0, 50)) + '</div>';
+                html += '<div class="devtools-selector-result" data-action="selector-result" data-index="' + i + '">[' + (i+1) + '] &lt;' + tag + id + cls + '&gt; - ' + escapeHtml((el.textContent || '').substring(0, 50)) + '</div>';
             });
-            html += '<button class="devtools-console-btn" onclick="window.devtoolsCopyToolResult(\'devtools-selector-result\')" style="margin-top:8px;">复制结果</button>';
+            html += '<button class="devtools-console-btn" data-action="copy-result" data-target="devtools-selector-result" style="margin-top:8px;">复制结果</button>';
             resultDiv.innerHTML = html;
         } catch (e) { resultDiv.innerHTML = '<div class="devtools-result-box" style="color:#c00;">选择器错误: ' + escapeHtml(e.message) + '</div>'; }
     };
@@ -2373,7 +2456,7 @@
 
     function renderJsonTool() {
         const container = document.getElementById('devtools-tools-content');
-        container.innerHTML = '<div class="devtools-input-group"><label class="devtools-input-label">输入JSON</label><textarea class="devtools-textarea" id="devtools-json-input" placeholder="粘贴JSON文本..."></textarea></div><div style="margin-bottom:10px;"><button class="devtools-tool-btn primary" onclick="window.devtoolsFormatJson()">格式化</button><button class="devtools-tool-btn" onclick="window.devtoolsMinifyJson()">压缩</button><button class="devtools-tool-btn" onclick="window.devtoolsCopyJson()">复制</button></div><div id="devtools-json-result"></div>';
+        container.innerHTML = '<div class="devtools-input-group"><label class="devtools-input-label">输入JSON</label><textarea class="devtools-textarea" id="devtools-json-input" placeholder="粘贴JSON文本..."></textarea></div><div style="margin-bottom:10px;"><button class="devtools-tool-btn primary" data-action="format-json">格式化</button><button class="devtools-tool-btn" data-action="minify-json">压缩</button><button class="devtools-tool-btn" data-action="copy-json">复制</button></div><div id="devtools-json-result"></div>';
     }
 
     window.devtoolsFormatJson = function() {
@@ -2382,7 +2465,7 @@
         try {
             const parsed = JSON.parse(input);
             const formatted = JSON.stringify(parsed, null, 2);
-            resultDiv.innerHTML = '<div class="devtools-result-box"><pre style="margin:0;white-space:pre-wrap;font-size:10px;">' + escapeHtml(formatted) + '</pre></div><button class="devtools-console-btn" onclick="window.devtoolsCopyToolResult(\'devtools-json-result\')" style="margin-top:8px;">复制结果</button>';
+            resultDiv.innerHTML = '<div class="devtools-result-box"><pre style="margin:0;white-space:pre-wrap;font-size:10px;">' + escapeHtml(formatted) + '</pre></div><button class="devtools-console-btn" data-action="copy-result" data-target="devtools-json-result" style="margin-top:8px;">复制结果</button>';
             window.__formattedJson = formatted;
         } catch (e) { resultDiv.innerHTML = '<div class="devtools-result-box" style="color:#c00;">JSON解析错误: ' + escapeHtml(e.message) + '</div>'; }
     };
@@ -2393,7 +2476,7 @@
         try {
             const parsed = JSON.parse(input);
             const minified = JSON.stringify(parsed);
-            resultDiv.innerHTML = '<div class="devtools-result-box"><pre style="margin:0;white-space:pre-wrap;word-break:break-all;font-size:10px;">' + escapeHtml(minified) + '</pre></div><button class="devtools-console-btn" onclick="window.devtoolsCopyToolResult(\'devtools-json-result\')" style="margin-top:8px;">复制结果</button>';
+            resultDiv.innerHTML = '<div class="devtools-result-box"><pre style="margin:0;white-space:pre-wrap;word-break:break-all;font-size:10px;">' + escapeHtml(minified) + '</pre></div><button class="devtools-console-btn" data-action="copy-result" data-target="devtools-json-result" style="margin-top:8px;">复制结果</button>';
             window.__formattedJson = minified;
         } catch (e) { resultDiv.innerHTML = '<div class="devtools-result-box" style="color:#c00;">JSON解析错误: ' + escapeHtml(e.message) + '</div>'; }
     };
@@ -2409,7 +2492,7 @@
 
     function renderStringTool() {
         const container = document.getElementById('devtools-tools-content');
-        container.innerHTML = '<div class="devtools-input-group"><label class="devtools-input-label">输入字符串</label><textarea class="devtools-textarea" id="devtools-string-input" placeholder="输入要处理的字符串..."></textarea></div><div style="margin-bottom:10px;"><button class="devtools-tool-btn" onclick="window.devtoolsStringOp(\'base64Encode\')">Base64编码</button><button class="devtools-tool-btn" onclick="window.devtoolsStringOp(\'base64Decode\')">Base64解码</button><button class="devtools-tool-btn" onclick="window.devtoolsStringOp(\'urlEncode\')">URL编码</button><button class="devtools-tool-btn" onclick="window.devtoolsStringOp(\'urlDecode\')">URL解码</button><button class="devtools-tool-btn" onclick="window.devtoolsStringOp(\'htmlEncode\')">HTML编码</button><button class="devtools-tool-btn" onclick="window.devtoolsStringOp(\'htmlDecode\')">HTML解码</button><button class="devtools-tool-btn" onclick="window.devtoolsStringOp(\'md5\')">MD5</button><button class="devtools-tool-btn" onclick="window.devtoolsStringOp(\'sha256\')">SHA256</button><button class="devtools-tool-btn" onclick="window.devtoolsStringOp(\'escapeUnicode\')">Unicode转义</button><button class="devtools-tool-btn" onclick="window.devtoolsStringOp(\'unescapeUnicode\')">Unicode还原</button></div><div id="devtools-string-result"></div>';
+        container.innerHTML = '<div class="devtools-input-group"><label class="devtools-input-label">输入字符串</label><textarea class="devtools-textarea" id="devtools-string-input" placeholder="输入要处理的字符串..."></textarea></div><div style="margin-bottom:10px;"><button class="devtools-tool-btn" data-action="string-op" data-op="base64Encode">Base64编码</button><button class="devtools-tool-btn" data-action="string-op" data-op="base64Decode">Base64解码</button><button class="devtools-tool-btn" data-action="string-op" data-op="urlEncode">URL编码</button><button class="devtools-tool-btn" data-action="string-op" data-op="urlDecode">URL解码</button><button class="devtools-tool-btn" data-action="string-op" data-op="htmlEncode">HTML编码</button><button class="devtools-tool-btn" data-action="string-op" data-op="htmlDecode">HTML解码</button><button class="devtools-tool-btn" data-action="string-op" data-op="md5">MD5</button><button class="devtools-tool-btn" data-action="string-op" data-op="sha256">SHA256</button><button class="devtools-tool-btn" data-action="string-op" data-op="escapeUnicode">Unicode转义</button><button class="devtools-tool-btn" data-action="string-op" data-op="unescapeUnicode">Unicode还原</button></div><div id="devtools-string-result"></div>';
     }
 
     window.devtoolsStringOp = function(op) {
@@ -2425,11 +2508,11 @@
                 case 'htmlEncode': result = escapeHtml(input); break;
                 case 'htmlDecode': result = input.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&amp;/g, '&'); break;
                 case 'md5': result = window.devtoolsMD5(input); break;
-                case 'sha256': window.devtoolsSha256(input).then(r => { resultDiv.innerHTML = '<div class="devtools-result-box"><pre style="margin:0;word-break:break-all;font-size:10px;">' + escapeHtml(r) + '</pre></div><button class="devtools-console-btn" onclick="window.devtoolsCopyToolResult(\'devtools-string-result\')" style="margin-top:8px;">复制结果</button>'; }).catch(e => { resultDiv.innerHTML = '<div class="devtools-result-box" style="color:#c00;">SHA256 失败: ' + escapeHtml(e.message || e) + '</div>'; }); return;
+                case 'sha256': window.devtoolsSha256(input).then(r => { resultDiv.innerHTML = '<div class="devtools-result-box"><pre style="margin:0;word-break:break-all;font-size:10px;">' + escapeHtml(r) + '</pre></div><button class="devtools-console-btn" data-action="copy-result" data-target="devtools-string-result" style="margin-top:8px;">复制结果</button>'; }).catch(e => { resultDiv.innerHTML = '<div class="devtools-result-box" style="color:#c00;">SHA256 失败: ' + escapeHtml(e.message || e) + '</div>'; }); return;
                 case 'escapeUnicode': result = input.split('').map(c => c.charCodeAt(0) > 127 ? '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0') : c).join(''); break;
                 case 'unescapeUnicode': result = input.replace(/\\u([0-9a-fA-F]{4})/g, (_, p) => String.fromCharCode(parseInt(p, 16))); break;
             }
-            resultDiv.innerHTML = '<div class="devtools-result-box"><pre style="margin:0;word-break:break-all;font-size:10px;">' + escapeHtml(result) + '</pre></div><button class="devtools-console-btn" onclick="window.devtoolsCopyToolResult(\'devtools-string-result\')" style="margin-top:8px;">复制结果</button>';
+            resultDiv.innerHTML = '<div class="devtools-result-box"><pre style="margin:0;word-break:break-all;font-size:10px;">' + escapeHtml(result) + '</pre></div><button class="devtools-console-btn" data-action="copy-result" data-target="devtools-string-result" style="margin-top:8px;">复制结果</button>';
             window.__stringResult = result;
         } catch (e) { resultDiv.innerHTML = '<div class="devtools-result-box" style="color:#c00;">操作失败: ' + escapeHtml(e.message) + '</div>'; }
     };
@@ -2498,7 +2581,7 @@
 
     function renderRequestTool() {
         const container = document.getElementById('devtools-tools-content');
-        container.innerHTML = '<div style="margin-bottom:10px;"><select id="devtools-request-method" class="devtools-console-btn"><option value="GET">GET</option><option value="POST">POST</option><option value="PUT">PUT</option><option value="DELETE">DELETE</option><option value="PATCH">PATCH</option><option value="HEAD">HEAD</option></select><input type="text" class="devtools-input" id="devtools-request-url" placeholder="输入URL" style="width:calc(100% - 80px);margin-left:4px;"></div><div class="devtools-input-group"><label class="devtools-input-label">请求头 (JSON格式)</label><textarea class="devtools-textarea" id="devtools-request-headers" placeholder=\'{"Content-Type": "application/json"}\'></textarea></div><div class="devtools-input-group"><label class="devtools-input-label">请求体</label><textarea class="devtools-textarea" id="devtools-request-body" placeholder="请求体内容..."></textarea></div><button class="devtools-tool-btn primary" onclick="window.devtoolsSendRequest()">发送请求</button><div id="devtools-request-response"></div>';
+        container.innerHTML = '<div style="margin-bottom:10px;"><select id="devtools-request-method" class="devtools-console-btn"><option value="GET">GET</option><option value="POST">POST</option><option value="PUT">PUT</option><option value="DELETE">DELETE</option><option value="PATCH">PATCH</option><option value="HEAD">HEAD</option></select><input type="text" class="devtools-input" id="devtools-request-url" placeholder="输入URL" style="width:calc(100% - 80px);margin-left:4px;"></div><div class="devtools-input-group"><label class="devtools-input-label">请求头 (JSON格式)</label><textarea class="devtools-textarea" id="devtools-request-headers" placeholder=\'{"Content-Type": "application/json"}\'></textarea></div><div class="devtools-input-group"><label class="devtools-input-label">请求体</label><textarea class="devtools-textarea" id="devtools-request-body" placeholder="请求体内容..."></textarea></div><button class="devtools-tool-btn primary" data-action="send-request">发送请求</button><div id="devtools-request-response"></div>';
     }
 
     window.devtoolsSendRequest = async function() {
@@ -2520,7 +2603,7 @@
             const responseText = await response.text();
             let formattedText = responseText;
             try { const json = JSON.parse(responseText); formattedText = JSON.stringify(json, null, 2); } catch {}
-            responseDiv.innerHTML = '<div style="margin-bottom:8px;padding:8px;background:var(--bg-hover,#f5f5f5);border-radius:3px;font-size:11px;"><div><strong>状态:</strong> ' + response.status + ' ' + response.statusText + '</div><div><strong>耗时:</strong> ' + duration + 'ms</div><div><strong>大小:</strong> ' + responseText.length + ' 字节</div></div><pre style="padding:8px;background:var(--bg-hover,#f5f5f5);border:1px solid var(--border-light,#eee);border-radius:3px;font-size:10px;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow:auto;">' + escapeHtml(formattedText) + '</pre><button class="devtools-console-btn" onclick="window.devtoolsCopyToolResult(\'devtools-request-response\')" style="margin-top:8px;">复制结果</button>';
+            responseDiv.innerHTML = '<div style="margin-bottom:8px;padding:8px;background:var(--bg-hover,#f5f5f5);border-radius:3px;font-size:11px;"><div><strong>状态:</strong> ' + response.status + ' ' + response.statusText + '</div><div><strong>耗时:</strong> ' + duration + 'ms</div><div><strong>大小:</strong> ' + responseText.length + ' 字节</div></div><pre style="padding:8px;background:var(--bg-hover,#f5f5f5);border:1px solid var(--border-light,#eee);border-radius:3px;font-size:10px;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow:auto;">' + escapeHtml(formattedText) + '</pre><button class="devtools-console-btn" data-action="copy-result" data-target="devtools-request-response" style="margin-top:8px;">复制结果</button>';
         } catch (e) { responseDiv.innerHTML = '<div class="devtools-result-box" style="color:#c00;">请求失败: ' + escapeHtml(e.message) + '</div>'; }
     };
 
@@ -2568,10 +2651,10 @@
         data.forEach(item => {
             const keyEscaped = escapeHtml(item.key).replace(/'/g, "\\'");
             const valuePreview = (item.value || '').length > 200 ? escapeHtml(item.value.substring(0, 200)) + '...' : escapeHtml(item.value || '');
-            html += '<tr><td>' + escapeHtml(item.key) + '</td><td>' + valuePreview + '</td><td><button class="devtools-action-btn" onclick="window.devtoolsEditStorage(\'' + keyEscaped + '\',\'' + type + '\')">编辑</button> <button class="devtools-action-btn" onclick="window.devtoolsCopyStorageValue(\'' + keyEscaped + '\',\'' + type + '\')">复制</button> <button class="devtools-action-btn" onclick="window.devtoolsDeleteStorage(\'' + keyEscaped + '\',\'' + type + '\')">删除</button></td></tr>';
+            html += '<tr><td>' + escapeHtml(item.key) + '</td><td>' + valuePreview + '</td><td><button class="devtools-action-btn" data-action="edit-storage" data-key="' + keyEscaped + '" data-storage-type="' + type + '">编辑</button> <button class="devtools-action-btn" data-action="copy-storage" data-key="' + keyEscaped + '" data-storage-type="' + type + '">复制</button> <button class="devtools-action-btn" data-action="delete-storage" data-key="' + keyEscaped + '" data-storage-type="' + type + '">删除</button></td></tr>';
         });
         html += '</tbody></table>';
-        if (['local', 'session', 'cookie'].includes(type)) html += '<button class="devtools-add-row" onclick="window.devtoolsAddStorage(\'' + type + '\')">+ 添加</button>';
+        if (['local', 'session', 'cookie'].includes(type)) html += '<button class="devtools-add-row" data-action="add-row" data-storage-type="' + type + '">+ 添加</button>';
         container.innerHTML = html;
     }
 
@@ -2657,7 +2740,7 @@
         const container = document.getElementById('devtools-resource-content');
         const ua = navigator.userAgent || '未知';
         window.__uaString = ua;
-        container.innerHTML = '<div class="devtools-resource-header"><span class="devtools-resource-title">User Agent</span></div><div style="padding:8px;font-size:11px;"><div style="margin-bottom:10px;padding:10px;background:var(--bg-hover,#f5f5f5);border-radius:4px;word-break:break-all;font-family:Consolas,monospace;font-size:10px;">' + escapeHtml(ua) + '</div><button class="devtools-action-btn" onclick="navigator.clipboard.writeText(window.__uaString).then(()=>showToast(\'已复制\'))">复制</button></div>';
+        container.innerHTML = '<div class="devtools-resource-header"><span class="devtools-resource-title">User Agent</span></div><div style="padding:8px;font-size:11px;"><div style="margin-bottom:10px;padding:10px;background:var(--bg-hover,#f5f5f5);border-radius:4px;word-break:break-all;font-family:Consolas,monospace;font-size:10px;">' + escapeHtml(ua) + '</div><button class="devtools-action-btn" data-action="copy-ua">复制</button></div>';
     }
 
     function renderCacheInfo() {
@@ -2665,7 +2748,7 @@
         const usedMemory = performance.memory?.usedJSHeapSize ? (performance.memory.usedJSHeapSize/1024/1024).toFixed(2)+'MB' : '不支持';
         const totalMemory = performance.memory?.jsHeapSizeLimit ? (performance.memory.jsHeapSizeLimit/1024/1024).toFixed(2)+'MB' : '不支持';
         const domCount = document.querySelectorAll('*').length;
-        container.innerHTML = '<div class="devtools-resource-header"><span class="devtools-resource-title">缓存信息</span></div><div style="padding:8px;font-size:11px;"><div class="devtools-performance-metric"><span>内存使用</span><span>' + usedMemory + '</span></div><div class="devtools-performance-metric"><span>总内存</span><span>' + totalMemory + '</span></div><div class="devtools-performance-metric"><span>DOM节点数</span><span>' + domCount + '</span></div><button class="devtools-tool-btn" onclick="location.reload()" style="margin-top:10px;">刷新页面</button></div>';
+        container.innerHTML = '<div class="devtools-resource-header"><span class="devtools-resource-title">缓存信息</span></div><div style="padding:8px;font-size:11px;"><div class="devtools-performance-metric"><span>内存使用</span><span>' + usedMemory + '</span></div><div class="devtools-performance-metric"><span>总内存</span><span>' + totalMemory + '</span></div><div class="devtools-performance-metric"><span>DOM节点数</span><span>' + domCount + '</span></div><button class="devtools-tool-btn" data-action="refresh" style="margin-top:10px;">刷新页面</button></div>';
     }
 
     // ============ 性能面板 ============
@@ -2688,7 +2771,7 @@
             html += '</div>';
             
             html += '<div style="padding:8px;border-top:1px solid var(--border-light,#eee);">';
-            html += '<div class="devtools-resource-header"><span class="devtools-resource-title">资源加载 (' + entries.length + ')</span><button class="devtools-console-btn" onclick="performance.clearResourceTimings();window.devtoolsRenderPerformance&&window.devtoolsRenderPerformance();">刷新</button></div>';
+            html += '<div class="devtools-resource-header"><span class="devtools-resource-title">资源加载 (' + entries.length + ')</span><button class="devtools-console-btn" data-action="refresh-perf">刷新</button></div>';
             html += '<div style="max-height:250px;overflow:auto;font-size:11px;">';
             html += '<table class="devtools-storage-table" style="width:100%;"><thead><tr><th>资源</th><th>类型</th><th>耗时</th><th>大小</th></tr></thead><tbody>';
             entries.slice(-50).forEach(entry => {
@@ -2751,6 +2834,7 @@
     function init() {
         createStyles();
         createSidebar();
+        initEventDelegation();
         applySidebarSettings();
         hijackConsole();
         hijackNetwork();
