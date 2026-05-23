@@ -2595,11 +2595,15 @@
                 mutations.forEach(m => {
                     m.removedNodes.forEach(node => {
                         if (node.nodeType === 1) {
-                            const id = elementToIdMap.get(node);
-                            if (id) {
-                                elementIdToElementMap.delete(id);
-                                elementToIdMap.delete(node);
-                            }
+                            const cleanup = el => {
+                                const id = elementToIdMap.get(el);
+                                if (id) {
+                                    elementIdToElementMap.delete(id);
+                                    elementToIdMap.delete(el);
+                                }
+                            };
+                            cleanup(node);
+                            if (node.querySelectorAll) node.querySelectorAll('*').forEach(cleanup);
                         }
                     });
                 });
