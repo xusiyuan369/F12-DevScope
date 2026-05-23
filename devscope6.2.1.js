@@ -243,11 +243,14 @@
                 flex: 1; overflow-y: auto; font-family: Consolas, monospace; font-size: 11px;
                 color: var(--text-primary, #333);
             }
-            .devtools-tree-node { padding: 2px 4px; cursor: pointer; user-select: none; word-break: break-all; white-space: pre-wrap; }
+            .devtools-tree-node { display: flex; align-items: flex-start; padding: 1px 0; cursor: pointer; user-select: none; word-break: break-all; white-space: pre-wrap; min-height: 18px; }
             .devtools-tree-node:hover { background: rgba(0, 120, 212, 0.08); }
             .devtools-tree-node.selected { background: rgba(0, 120, 212, 0.15); color: inherit; }
-            .devtools-tree-toggle { display: inline-block; width: 16px; text-align: center; color: var(--text-secondary, #666); }
-            .devtools-tree-children { margin-left: 16px; display: none; }
+            .devtools-indent-guide { width: 16px; flex-shrink: 0; height: 18px; box-sizing: border-box; }
+            .devtools-indent-guide.line { border-left: 1px solid var(--border-light, #ccc); }
+            .devtools-indent-guide.empty { border-left: 1px solid transparent; }
+            .devtools-tree-toggle { width: 16px; flex-shrink: 0; text-align: center; color: var(--text-secondary, #666); line-height: 18px; }
+            .devtools-tree-children { display: none; }
             .devtools-tree-children.open { display: block; }
             .devtools-tag-name { color: #569cd6; }
             .devtools-attr-name { color: #9cdcfe; }
@@ -1810,7 +1813,8 @@
         applyExpandedState();
     }
 
-    function renderTreeNode(element, level) {
+    function renderTreeNode(element, level, ancestorLastFlags) {
+        ancestorLastFlags = ancestorLastFlags || [];
         const tagName = element.tagName?.toLowerCase() || '';
         if (!tagName || level > 15 || totalNodesRendered >= MAX_NODES) return '';
         totalNodesRendered++;
@@ -1818,17 +1822,26 @@
         const elementId = getElementId(element);
         const isExpanded = expandedNodes.has(elementId);
         const attrs = getAttributes(element);
-        let html = `<div class="devtools-tree-node" data-element-id="${elementId}" data-level="${level}">${hasChildren ? `<span class="devtools-tree-toggle">${isExpanded?'▼':'▶'}</span>` : '<span class="devtools-tree-toggle"> </span>'}<span class="devtools-tag-name">&lt;${tagName}</span>${attrs}<span class="devtools-tag-name">&gt;</span></div>`;
+
+        // 生成缩进引导线
+        let guides = '';
+        for (let i = 0; i < ancestorLastFlags.length; i++) {
+            guides += `<span class="devtools-indent-guide ${ancestorLastFlags[i] ? 'empty' : 'line'}"></span>`;
+        }
+
+        let html = `<div class="devtools-tree-node" data-element-id="${elementId}" data-level="${level}">${guides}${hasChildren ? `<span class="devtools-tree-toggle">${isExpanded?'▼':'▶'}</span>` : '<span class="devtools-tree-toggle"> </span>'}<span class="devtools-tag-name">&lt;${tagName}</span>${attrs}<span class="devtools-tag-name">&gt;</span></div>`;
 
         if (hasChildren) {
             html += `<div class="devtools-tree-children ${isExpanded?'open':''}">`;
-            const maxChildren = Math.min(element.children.length, 100);
+            const childCount = element.children.length;
+            const maxChildren = Math.min(childCount, 100);
             for (let i = 0; i < maxChildren; i++) {
                 if (totalNodesRendered >= MAX_NODES) {
                     html += '<div style="padding:2px 4px;color:#999;font-size:10px;">节点过多，已截断</div>';
                     break;
                 }
-                html += renderTreeNode(element.children[i], level + 1);
+                const isLast = (i === maxChildren - 1) || (i === childCount - 1);
+                html += renderTreeNode(element.children[i], level + 1, ancestorLastFlags.concat(isLast));
             }
             html += `</div>`;
         }
