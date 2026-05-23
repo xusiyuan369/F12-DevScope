@@ -306,7 +306,22 @@
             .devtools-network-method { min-width: 50px; font-weight: bold; flex-shrink: 0; }
             .devtools-network-url { flex: 1; overflow: hidden; word-break: break-all; white-space: pre-wrap; color: var(--text-secondary, #666); }
             .devtools-network-status { min-width: 40px; text-align: right; }
+            .devtools-network-status.status-ok { color: #2e7d32; }
+            .devtools-network-status.status-redirect { color: #f57f17; }
+            .devtools-network-status.status-client-error { color: #e65100; }
+            .devtools-network-status.status-server-error { color: #c62828; }
+            .devtools-network-status.status-pending { color: #999; }
             .devtools-network-time { min-width: 50px; text-align: right; color: var(--text-secondary, #999); }
+            .devtools-network-type { min-width: 32px; text-align: center; font-size: 10px; color: var(--text-secondary, #999); }
+
+            /* 网络详情面板 */
+            .devtools-details-header { padding: 6px 0 10px; border-bottom: 1px solid var(--border-light, #eee); margin-bottom: 8px; }
+            .devtools-details-title { font-size: 13px; font-weight: 600; word-break: break-all; }
+            .devtools-details-item { display: flex; padding: 6px 0; border-bottom: 1px solid var(--border-light, #f0f0f0); font-size: 12px; }
+            .devtools-details-label { width: 80px; flex-shrink: 0; color: var(--text-secondary, #888); font-weight: 500; }
+            .devtools-details-value { flex: 1; word-break: break-all; color: var(--text-primary, #333); }
+            .devtools-details-value pre { margin: 0; white-space: pre-wrap; font-size: 11px; font-family: Consolas, Monaco, monospace; background: var(--bg-details, #f7f7f7); padding: 6px 8px; border-radius: 3px; max-height: 400px; overflow: auto; }
+            .devtools-details-section-title { font-size: 11px; font-weight: 600; color: var(--text-secondary, #666); padding: 8px 0 4px; }
 
             /* 工具 */
             .devtools-tools-wrapper { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
@@ -1318,11 +1333,17 @@
 
         const originalOpen = XMLHttpRequest.prototype.open;
         const originalSend = XMLHttpRequest.prototype.send;
+        const originalSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
         XMLHttpRequest.prototype.open = function(method, url) {
             this._requestMethod = method;
             this._requestUrl = url;
             this._requestId = Date.now() + Math.random().toString(36).substr(2, 9);
+            this._requestHeaders = {};
             return originalOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+            if (this._requestHeaders) this._requestHeaders[name] = value;
+            return originalSetRequestHeader.apply(this, arguments);
         };
         XMLHttpRequest.prototype.send = function(body) {
             if (window.__networkPaused) return originalSend.apply(this, arguments);
@@ -1332,6 +1353,7 @@
                 id, method: this._requestMethod || 'GET', url: this._requestUrl,
                 status: 'pending', startTime, endTime: null, duration: null,
                 type: 'xhr',
+                requestHeaders: this._requestHeaders && Object.keys(this._requestHeaders).length ? safeStringify(this._requestHeaders) : null,
                 requestBody: body ? (typeof body === 'string' ? body : safeStringify(body)) : null
             };
             networkRequests.push(requestData);
@@ -1479,6 +1501,42 @@
         }
     }
 
+    function getStatusClass(status) {
+        if (status === 'pending') return 'status-pending';
+        if (status === '错误' || status === 'sent') return '';
+        const code = Number(status);
+        if (code >= 200 && code < 300) return 'status-ok';
+        if (code >= 300 && code < 400) return 'status-redirect';
+        if (code >= 400 && code < 500) return 'status-client-error';
+        if (code >= 500) return 'status-server-error';
+        return '';
+    }
+
+    function getTypeLabel(req) {
+        if (req.type === 'websocket') return 'WS';
+        if (req.type === 'sse') return 'SSE';
+        if (req.type === 'beacon') return 'Beacon';
+        if (req.type === 'navigation') return 'Nav';
+        if (req.type === 'resource') {
+            const t = req.initiatorType || '';
+            if (t === 'xmlhttprequest' || t === 'fetch') return 'XHR';
+            if (t === 'script') return 'JS';
+            if (t === 'css') return 'CSS';
+            if (t === 'img' || t === 'image') return 'Img';
+            if (t === 'font') return 'Font';
+            if (t === 'media') return 'Media';
+            return t || 'Other';
+        }
+        return (req.type || 'xhr').toUpperCase();
+    }
+
+    function formatBytes(bytes) {
+        if (!bytes || bytes <= 0) return '0 B';
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+
     function renderNetworkRequests() {
         const container = document.getElementById('devtools-network-list');
         if (!container) return;
@@ -1521,7 +1579,11 @@
         });
 
         container.innerHTML = filtered.map(req => {
-            return '<div class="devtools-network-item" data-req-id="' + req.id.replace(/"/g, '&quot;') + '"><span class="devtools-network-method">' + escapeHtml(req.method) + '</span><span class="devtools-network-url">' + escapeHtml(req.url) + '</span></div>';
+            const statusClass = getStatusClass(req.status);
+            const statusText = req.status === 'pending' ? '...' : req.status;
+            const timeText = req.duration != null ? req.duration + 'ms' : '';
+            const typeLabel = getTypeLabel(req);
+            return '<div class="devtools-network-item" data-req-id="' + req.id.replace(/"/g, '&quot;') + '"><span class="devtools-network-method">' + escapeHtml(req.method) + '</span><span class="devtools-network-status ' + statusClass + '">' + escapeHtml(statusText) + '</span><span class="devtools-network-time">' + escapeHtml(timeText) + '</span><span class="devtools-network-url">' + escapeHtml(req.url) + '</span><span class="devtools-network-type">' + escapeHtml(typeLabel) + '</span></div>';
         }).join('');
     }
 
@@ -1534,10 +1596,39 @@
         const fullDiv = document.getElementById('devtools-network-details-full');
         fullDiv.style.display = 'block';
 
-        const summaryTab = '<div class="devtools-details-tab-content active" id="devtools-net-tab-summary"><div class="devtools-details-item"><div class="devtools-details-label">状态码</div><div class="devtools-details-value">' + escapeHtml(req.status) + '</div></div><div class="devtools-details-item"><div class="devtools-details-label">耗时</div><div class="devtools-details-value">' + escapeHtml(req.duration ? req.duration + 'ms' : '-') + '</div></div><div class="devtools-details-item"><div class="devtools-details-label">类型</div><div class="devtools-details-value">' + escapeHtml(req.type || 'xhr') + '</div></div><div class="devtools-details-item"><div class="devtools-details-label">URL</div><div class="devtools-details-value" style="word-break:break-all;">' + escapeHtml(req.url) + '</div></div></div>';
-        const requestTab = '<div class="devtools-details-tab-content" id="devtools-net-tab-request">' + (req.requestHeaders ? '<div class="devtools-details-item"><div class="devtools-details-label">请求头</div><div class="devtools-details-value"><pre style="margin:0;white-space:pre-wrap;font-size:10px;">' + escapeHtml(req.requestHeaders) + '</pre></div></div>' : '') + (req.requestBody ? '<div class="devtools-details-item"><div class="devtools-details-label">请求体</div><div class="devtools-details-value"><pre style="margin:0;white-space:pre-wrap;font-size:10px;">' + escapeHtml(req.requestBody) + '</pre></div></div>' : '') + '</div>';
-        const responseBodyDisplay = escapeHtml(req.responseBody && req.responseBody.length > 5000 ? req.responseBody.substring(0, 5000) + '\n\n[内容已截断...]' : (req.responseBody || '无响应体'));
-        const responseTab = '<div class="devtools-details-tab-content" id="devtools-net-tab-response">' + (req.responseHeaders ? '<div class="devtools-details-item"><div class="devtools-details-label">响应头</div><div class="devtools-details-value"><pre style="margin:0;white-space:pre-wrap;font-size:10px;">' + escapeHtml(req.responseHeaders) + '</pre></div></div>' : '') + '<div class="devtools-details-item"><div class="devtools-details-label">响应体</div><div class="devtools-details-value"><pre style="margin:0;white-space:pre-wrap;font-size:10px;max-height:400px;overflow:auto;">' + responseBodyDisplay + '</pre></div></div></div>';
+        const typeLabel = getTypeLabel(req);
+        const statusStr = req.status === 'pending' ? '等待中' : String(req.status);
+        const durationStr = req.duration != null ? req.duration + 'ms' : '-';
+        const sizeStr = req.transferSize ? formatBytes(req.transferSize) : (req.responseBody ? formatBytes(new Blob([req.responseBody]).size) : '-');
+        const summaryItems = [
+            ['方法', req.method],
+            ['状态码', statusStr],
+            ['耗时', durationStr],
+            ['大小', sizeStr],
+            ['类型', typeLabel],
+            ['URL', req.url]
+        ];
+        if (req.initiatorType) summaryItems.push(['发起者', req.initiatorType]);
+        const summaryTab = '<div class="devtools-details-tab-content active" id="devtools-net-tab-summary">' + summaryItems.map(function(item) { return '<div class="devtools-details-item"><div class="devtools-details-label">' + escapeHtml(item[0]) + '</div><div class="devtools-details-value">' + escapeHtml(item[1]) + '</div></div>'; }).join('') + '</div>';
+
+        let requestContent = '';
+        if (req.requestHeaders) requestContent += '<div class="devtools-details-section-title">请求头</div><div class="devtools-details-value"><pre>' + escapeHtml(req.requestHeaders) + '</pre></div>';
+        if (req.requestBody) requestContent += '<div class="devtools-details-section-title">请求体</div><div class="devtools-details-value"><pre>' + escapeHtml(req.requestBody) + '</pre></div>';
+        if (req.messages && req.messages.filter(function(m){return m.direction==='sent'}).length) {
+            requestContent += '<div class="devtools-details-section-title">发送消息</div><div class="devtools-details-value"><pre>' + escapeHtml(req.messages.filter(function(m){return m.direction==='sent'}).map(function(m){return m.data}).join('\n')) + '</pre></div>';
+        }
+        if (!requestContent) requestContent = '<div class="devtools-details-item"><div class="devtools-details-value" style="color:#999;">无请求数据</div></div>';
+        const requestTab = '<div class="devtools-details-tab-content" id="devtools-net-tab-request">' + requestContent + '</div>';
+
+        let responseContent = '';
+        if (req.responseHeaders) responseContent += '<div class="devtools-details-section-title">响应头</div><div class="devtools-details-value"><pre>' + escapeHtml(req.responseHeaders) + '</pre></div>';
+        const responseBodyDisplay = escapeHtml(req.responseBody && req.responseBody.length > 5000 ? req.responseBody.substring(0, 5000) + '\n\n[内容已截断...]' : (req.responseBody || ''));
+        if (responseBodyDisplay) responseContent += '<div class="devtools-details-section-title">响应体</div><div class="devtools-details-value"><pre>' + responseBodyDisplay + '</pre></div>';
+        if (req.messages && req.messages.filter(function(m){return m.direction==='received' || !m.direction}).length) {
+            responseContent += '<div class="devtools-details-section-title">接收消息</div><div class="devtools-details-value"><pre>' + escapeHtml(req.messages.filter(function(m){return m.direction==='received' || !m.direction}).map(function(m){return m.data}).join('\n')) + '</pre></div>';
+        }
+        if (!responseContent) responseContent = '<div class="devtools-details-item"><div class="devtools-details-value" style="color:#999;">无响应数据</div></div>';
+        const responseTab = '<div class="devtools-details-tab-content" id="devtools-net-tab-response">' + responseContent + '</div>';
 
         fullDiv.innerHTML = '<div class="devtools-details-back" id="devtools-net-back">← 返回列表</div><div class="devtools-details-header"><span class="devtools-details-title">' + escapeHtml(req.method) + ' ' + escapeHtml(req.url.length > 60 ? req.url.substring(0, 60) + '...' : req.url) + '</span></div><div class="devtools-details-tabs"><div class="devtools-details-tab active" onclick="window.devtoolsSwitchNetTab(\'summary\',this)">概要</div><div class="devtools-details-tab" onclick="window.devtoolsSwitchNetTab(\'request\',this)">请求</div><div class="devtools-details-tab" onclick="window.devtoolsSwitchNetTab(\'response\',this)">响应</div></div>' + summaryTab + requestTab + responseTab;
 
