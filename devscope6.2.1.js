@@ -2406,7 +2406,7 @@
 
     window.devtoolsEditStorage = function(key, type) {
         if (type === 'cookie') {
-            const cookieValue = document.cookie.split(';').find(c => c.trim().startsWith(key + '='))?.split('=')[1] || '';
+            const cookieValue = document.cookie.split(';').find(c => c.trim().startsWith(key + '='))?.split(/=(.+)/)[1] || '';
             const newValue = prompt('编辑 "' + key + '" 的值:', decodeURIComponent(cookieValue));
             if (newValue !== null) {
                 document.cookie = key + '=' + encodeURIComponent(newValue) + ';path=/';
@@ -2426,7 +2426,7 @@
     window.devtoolsCopyStorageValue = function(key, type) {
         let value = '';
         if (type === 'cookie') {
-            value = document.cookie.split(';').find(c => c.trim().startsWith(key + '='))?.split('=')[1] || '';
+            value = document.cookie.split(';').find(c => c.trim().startsWith(key + '='))?.split(/=(.+)/)[1] || '';
             value = decodeURIComponent(value);
         } else {
             value = type === 'local' ? localStorage.getItem(key) || '' : sessionStorage.getItem(key) || '';
