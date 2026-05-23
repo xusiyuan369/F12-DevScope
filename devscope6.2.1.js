@@ -89,6 +89,14 @@
         }
     }
 
+    function formDataToString(fd) {
+        try {
+            const entries = [];
+            fd.forEach((value, key) => entries.push(key + '=' + (typeof value === 'string' ? value : '[File]')));
+            return entries.join('&');
+        } catch { return '[FormData]'; }
+    }
+
     // 恢复跳转前日志
     function restoreCrossPageLogs() {
         try {
@@ -1531,6 +1539,7 @@
         const origAssign = window.location.assign.bind(window.location);
         const origReplace = window.location.replace.bind(window.location);
         const origReload = window.location.reload.bind(window.location);
+        const origFormSubmit = HTMLFormElement.prototype.submit;
 
         // 保存原始 href 属性描述符
         const origHrefDesc = Object.getOwnPropertyDescriptor(window.location, 'href');
@@ -1613,19 +1622,19 @@
             e.preventDefault();
             const method = (form.method || 'GET').toUpperCase();
             const url = form.action || window.location.href;
-            const body = new FormData(form);
             if (prefetchPostForms && method === 'POST') {
-                // 传递给 captureNavigation，不再传自定义 headers，让 GM_xmlhttpRequest 自动处理 FormData
-                captureNavigation(method, url, null, body, () => { form.submit(); });
+                const body = new FormData(form);
+                captureNavigation(method, url, null, body, () => { origFormSubmit.call(form); });
             } else {
                 const id = Date.now() + Math.random().toString(36).substr(2, 9);
+                const bodyStr = method !== 'GET' ? formDataToString(new FormData(form)) : null;
                 networkRequests.push({
                     id, method, url, status: 'submitted', startTime: Date.now(),
-                    type: 'navigation', requestBody: body ? safeStringify(body) : null
+                    type: 'navigation', requestBody: bodyStr
                 });
                 trimNetworkRequests();
                 saveLogsForNavigation();
-                form.submit();
+                origFormSubmit.call(form);
             }
         }, true);
         // 劫持 history API（记录 SPA 路由）
