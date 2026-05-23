@@ -1499,16 +1499,16 @@
                     // 资源类请求
                     if (req.type === 'resource') {
                         const initType = req.initiatorType || '';
+                        if (typeFilter === 'XHR') return initType === 'xmlhttprequest' || initType === 'fetch';
                         if (typeFilter === 'JS') return initType === 'script' || /\.js(\?|$)/.test(req.url);
                         if (typeFilter === 'CSS') return initType === 'css' || /\.css(\?|$)/.test(req.url);
                         if (typeFilter === 'Img') return initType === 'img' || initType === 'image' || /\.(png|jpg|jpeg|gif|svg|webp|ico)(\?|$)/.test(req.url);
                         if (typeFilter === 'Other') {
-                            // 不是 JS/CSS/Img 的资源（如 font, media 等）
-                            if (initType === 'script' || initType === 'css' || initType === 'img' || initType === 'image') return false;
+                            // 不是 XHR/JS/CSS/Img 的资源（如 font, media 等）
+                            if (['xmlhttprequest','fetch','script','css','img','image'].includes(initType)) return false;
                             if (/\.(js|css|png|jpg|jpeg|gif|svg|webp|ico)(\?|$)/.test(req.url)) return false;
                             return true;
                         }
-                        if (typeFilter === 'XHR') return false; // 资源类不属于 XHR
                     }
                 }
             }
